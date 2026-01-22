@@ -8,19 +8,27 @@ let package = Package(
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "swift-agent",
-            targets: ["swift-agent"]
+            name: "SwiftAgent",
+            targets: ["SwiftAgentCore"]
+        ),
+        .executable(
+            name: "swift-agent-example",
+            targets: ["Example"]
         ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "swift-agent"
+            name: "SwiftAgentCore",
+        ),
+        .executableTarget(
+            name: "Example",
+            dependencies: ["SwiftAgentCore"]
         ),
         .testTarget(
-            name: "swift-agentTests",
-            dependencies: ["swift-agent"]
+            name: "SwiftAgentCoreTests",
+            dependencies: ["SwiftAgentCore"]
         ),
     ]
 )
