@@ -21,7 +21,8 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/mattt/AnyLanguageModel.git", exact: "0.5.4")
+        .package(url: "https://github.com/mattt/AnyLanguageModel.git", from: "0.5.4"),
+        .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -38,6 +39,7 @@ let package = Package(
             dependencies: [
                 "SwiftAgentCore",
                 .product(name: "AnyLanguageModel", package: "AnyLanguageModel"),
+                .product(name: "Configuration", package: "swift-configuration"),
             ]
         ),
         .testTarget(

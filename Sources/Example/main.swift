@@ -1,23 +1,27 @@
 import AnyLanguageModel
+import Configuration
 import Foundation
 import SwiftAgentCore
 
 @main
 struct ExampleRunner {
     static func main() async throws {
-        print("🤖 Swift Agent - Powered by AnyLanguageModel\n")
+        let config = ConfigReader(
+            provider: try! await EnvironmentVariablesProvider(
+                environmentFilePath: ".env",
+                secretsSpecifier: .specific(["DOUBAO_API_KEY"])
+            )
+        )
 
-        // Check for API key
-        guard let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] else {
-            print("⚠️  Set OPENAI_API_KEY environment variable to run this example")
-            print("Example: export OPENAI_API_KEY='your-key-here'\n")
-            return
-        }
+        let apiKey = config.string(forKey: "DOUBAO_API_KEY")!
+        let baseURL = config.string(forKey: "DOUBAO_API_URL")!
+        let doubaoFlashModelId = config.string(forKey: "DOUBAO_FLASH_MODEL_ID")!
 
         // Create OpenAI model
-        let model = OpenAILanguageModel(
+        let doubaoModel = OpenAILanguageModel(
+            baseURL: .init(string: baseURL)!,
             apiKey: apiKey,
-            model: "gpt-4o-mini"
+            model: doubaoFlashModelId,
         )
 
         // Create calculator tool
@@ -27,7 +31,7 @@ struct ExampleRunner {
         let agent = Agent(
             name: "AI Assistant",
             description: "A helpful AI assistant with calculator",
-            model: model,
+            model: doubaoModel,
             instructions: "You are a helpful AI assistant. When asked to do calculations, use the calculator tool.",
             tools: [calculator]
         )
