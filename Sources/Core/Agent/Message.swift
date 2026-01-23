@@ -8,7 +8,20 @@ public enum MessageRole: String, Codable, Sendable {
     case tool
 }
 
-/// Represents a message in the agent conversation
+/// Tool call representation for storage
+public struct ToolCall: Sendable, Codable, Identifiable {
+    public let id: String
+    public let name: String
+    public let arguments: String
+
+    public init(id: String, name: String, arguments: String) {
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+    }
+}
+
+/// Represents a message in the agent conversation (for storage purposes)
 public struct Message: Sendable, Codable, Identifiable {
     public let id: UUID
     public let role: MessageRole
@@ -17,7 +30,7 @@ public struct Message: Sendable, Codable, Identifiable {
     public let toolCallId: String?
     public let name: String?
     public let createdAt: Date
-    
+
     public init(
         id: UUID = UUID(),
         role: MessageRole,
@@ -42,22 +55,22 @@ extension Message {
     public static func system(_ content: String) -> Message {
         Message(role: .system, content: content)
     }
-    
+
     /// Creates a user message
     public static func user(_ content: String) -> Message {
         Message(role: .user, content: content)
     }
-    
+
     /// Creates an assistant message
     public static func assistant(_ content: String) -> Message {
         Message(role: .assistant, content: content)
     }
-    
+
     /// Creates an assistant message with tool calls
     public static func assistantWithTools(_ toolCalls: [ToolCall]) -> Message {
         Message(role: .assistant, toolCalls: toolCalls)
     }
-    
+
     /// Creates a tool result message
     public static func tool(content: String, toolCallId: String, name: String) -> Message {
         Message(role: .tool, content: content, toolCallId: toolCallId, name: name)

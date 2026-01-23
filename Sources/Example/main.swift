@@ -1,43 +1,88 @@
+import AnyLanguageModel
 import Foundation
 import SwiftAgentCore
 
 @main
 struct ExampleRunner {
     static func main() async throws {
-        print("🤖 Swift Agent - Minimal Implementation Demo\n")
+        print("🤖 Swift Agent - Powered by AnyLanguageModel\n")
 
-        // Create a mock model
-        let model = MockModel(responses: ["Hello! I can help you with calculations and questions."])
+        // Check for API key
+        guard let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] else {
+            print("⚠️  Set OPENAI_API_KEY environment variable to run this example")
+            print("Example: export OPENAI_API_KEY='your-key-here'\n")
+            return
+        }
+
+        // Create OpenAI model
+        let model = OpenAILanguageModel(
+            apiKey: apiKey,
+            model: "gpt-4o-mini"
+        )
+
+        // Create calculator tool
+        let calculator = CalculatorTool()
 
         // Create an agent
         let agent = Agent(
-            name: "Demo Agent",
-            description: "A simple agent for demonstration",
+            name: "AI Assistant",
+            description: "A helpful AI assistant with calculator",
             model: model,
-            instructions: [
-                "You are a helpful assistant.",
-                "You can perform calculations using the calculator tool.",
-            ],
-            tools: [CalculatorTool()]
+            instructions: "You are a helpful AI assistant. When asked to do calculations, use the calculator tool.",
+            tools: [calculator]
         )
 
         print("Agent created: \(agent.name)")
         print("Session ID: \(agent.sessionId)")
-        print("Instructions: \(agent.instructions.joined(separator: " "))\n")
+        print("Model: OpenAI GPT-4o Mini\n")
 
         // Run the agent with a message
-        print("Running agent with message: 'Hello!'\n")
-        let run = try await agent.run(message: "Hello!")
+        let message = "What is 123 multiplied by 456?"
+        print("User: \(message)\n")
+
+        let run = try await agent.run(message: message)
 
         // Display results
-        print("Run ID: \(run.id)")
+        print("✅ Assistant: \(run.content ?? "No response")")
+        print("\nRun ID: \(run.id)")
         print("Messages exchanged: \(run.messages.count)")
-        print("\nConversation:")
-        for (index, message) in run.messages.enumerated() {
-            let content = message.content ?? "(tool call)"
-            print("\(index + 1). [\(message.role.rawValue)] \(content)")
-        }
-
-        print("\n✅ Final response: \(run.content ?? "No response")")
     }
+}
+
+// MARK: - Calculator Tool
+
+struct CalculatorTool: Tool {
+    var name: String { "calculator" }
+    var description: String { "Performs basic arithmetic: add, subtract, multiply, divide" }
+
+    @Generable
+    struct Arguments: Codable {
+        var operation: String
+        var a: Double
+        var b: Double
+    }
+
+    func call(arguments: Arguments) async throws -> String {
+        let result: Double
+        switch arguments.operation.lowercased() {
+        case "add":
+            result = arguments.a + arguments.b
+        case "subtract":
+            result = arguments.a - arguments.b
+        case "multiply":
+            result = arguments.a * arguments.b
+        case "divide":
+            guard arguments.b != 0 else {
+                throw ToolError.invalidArguments("Cannot divide by zero")
+            }
+            result = arguments.a / arguments.b
+        default:
+            throw ToolError.invalidArguments("Invalid operation: \(arguments.operation)")
+        }
+        return "\(result)"
+    }
+}
+
+enum ToolError: Error {
+    case invalidArguments(String)
 }
