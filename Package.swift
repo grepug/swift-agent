@@ -21,7 +21,8 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/mattt/AnyLanguageModel.git", from: "0.5.4"),
+        // .package(url: "https://github.com/grepug/AnyLanguageModel.git", branch: "main"),
+        .package(path: "/Users/kai/Developer/ai/AnyLanguageModel"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
     ],
     targets: [

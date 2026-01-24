@@ -45,7 +45,11 @@ extension Agent {
     ///   - message: The user's input message
     ///   - loadHistory: Whether to load previous runs for context (default: true)
     /// - Returns: The run result containing all messages and the final response
-    public func run(message: String, loadHistory: Bool = true) async throws -> Run {
+    public func run<T: Codable & Generable>(
+        message: String,
+        as type: T.Type,
+        loadHistory: Bool = true
+    ) async throws -> Run {
         // Load previous runs to build transcript
         let previousRuns = loadHistory ? try await storage.runs(for: self) : []
 
@@ -60,10 +64,15 @@ extension Agent {
         )
 
         // Use AnyLanguageModel's session to handle the conversation
-        let response = try await session.respond { Prompt(message) }
+        let response = try await session.respond(to: message, generating: T.self)
+        let content: Data?
 
-        // Extract content from response
-        let content = String(describing: response.content)
+        if let string = response.content as? String {
+            // Extract content from response
+            content = string.data(using: .utf8)
+        } else {
+            content = try JSONEncoder().encode(response.content)
+        }
 
         // Create messages from the session transcript
         let messages = extractMessages(from: session.transcript)
@@ -74,7 +83,7 @@ extension Agent {
             sessionId: sessionId,
             userId: userId,
             messages: messages,
-            content: content
+            rawContent: content,
         )
 
         // Save to storage
@@ -88,7 +97,10 @@ extension Agent {
     ///   - message: The user's input message
     ///   - loadHistory: Whether to load previous runs for context (default: true)
     /// - Returns: An async stream of response chunks
-    public func stream(message: String, loadHistory: Bool = true) -> AsyncThrowingStream<String, Error> {
+    public func stream(
+        message: String,
+        loadHistory: Bool = true
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -103,14 +115,11 @@ extension Agent {
                         transcript: transcript
                     )
 
-                    let stream = session.streamResponse { Prompt(message) }
+                    // Use respond() which handles tool calls automatically
+                    let response = try await session.respond { Prompt(message) }
 
-                    for try await snapshot in stream {
-                        // snapshot is ResponseStream<String>.Snapshot
-                        // content is String.PartiallyGenerated
-                        let content = "\(snapshot.content)"
-                        continuation.yield(content)
-                    }
+                    // The response content is already a String
+                    continuation.yield(String(describing: response.content))
 
                     continuation.finish()
                 } catch {
@@ -236,6 +245,7 @@ extension Agent {
 public enum AgentError: Error, CustomStringConvertible {
     case noResponseFromModel
     case invalidConfiguration(String)
+    case invalidJSONResponse
 
     public var description: String {
         switch self {
@@ -243,6 +253,8 @@ public enum AgentError: Error, CustomStringConvertible {
             return "No response received from model"
         case .invalidConfiguration(let message):
             return "Invalid configuration: \(message)"
+        case .invalidJSONResponse:
+            return "Could not parse JSON from model response"
         }
     }
 }
