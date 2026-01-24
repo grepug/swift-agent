@@ -50,18 +50,11 @@ extension Agent {
         as type: T.Type,
         loadHistory: Bool = true
     ) async throws -> Run {
-        // Load previous runs to build transcript
-        let previousRuns = loadHistory ? try await storage.runs(for: self) : []
-
-        // Build transcript from history
-        let transcript = try buildTranscript(from: previousRuns)
+        // Load transcript with history
+        let transcript = try await loadTranscript(includeHistory: loadHistory)
 
         // Create session with conversation history
-        let session = LanguageModelSession(
-            model: model,
-            tools: tools,
-            transcript: transcript
-        )
+        let session = createSession(with: transcript)
 
         // Use AnyLanguageModel's session to handle the conversation
         let response = try await session.respond(to: message, generating: T.self)
@@ -104,16 +97,11 @@ extension Agent {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    // Load previous runs to build transcript
-                    let previousRuns = loadHistory ? try await storage.runs(for: self) : []
-                    let transcript = try buildTranscript(from: previousRuns)
+                    // Load transcript with history
+                    let transcript = try await loadTranscript(includeHistory: loadHistory)
 
                     // Create session with history
-                    let session = LanguageModelSession(
-                        model: model,
-                        tools: tools,
-                        transcript: transcript
-                    )
+                    let session = createSession(with: transcript)
 
                     // Use respond() which handles tool calls automatically
                     let response = try await session.respond { Prompt(message) }
@@ -132,9 +120,19 @@ extension Agent {
             }
         }
     }
+}
+
+// MARK: - Transcript Management
+
+extension Agent {
+    /// Load transcript with optional history
+    fileprivate func loadTranscript(includeHistory: Bool) async throws -> Transcript {
+        let previousRuns = includeHistory ? try await storage.runs(for: self) : []
+        return try buildTranscript(from: previousRuns)
+    }
 
     /// Build a Transcript from previous runs
-    private func buildTranscript(from runs: [Run]) throws -> Transcript {
+    fileprivate func buildTranscript(from runs: [Run]) throws -> Transcript {
         var entries: [Transcript.Entry] = []
 
         // Add instructions if available
@@ -188,44 +186,25 @@ extension Agent {
     }
 
     /// Extract messages from a Transcript for storage
-    private func extractMessages(from transcript: Transcript) -> [Message] {
+    fileprivate func extractMessages(from transcript: Transcript) -> [Message] {
         var messages: [Message] = []
 
         for entry in transcript {
             switch entry {
             case .instructions(let inst):
-                // Store as system message
-                let content = inst.segments.compactMap { segment in
-                    if case .text(let text) = segment {
-                        return text.content
-                    }
-                    return nil
-                }.joined(separator: "\n")
-
+                let content = extractTextContent(from: inst.segments)
                 if !content.isEmpty {
                     messages.append(.system(content))
                 }
 
             case .prompt(let prompt):
-                let content = prompt.segments.compactMap { segment in
-                    if case .text(let text) = segment {
-                        return text.content
-                    }
-                    return nil
-                }.joined(separator: "\n")
-
+                let content = extractTextContent(from: prompt.segments)
                 if !content.isEmpty {
                     messages.append(.user(content))
                 }
 
             case .response(let response):
-                let content = response.segments.compactMap { segment in
-                    if case .text(let text) = segment {
-                        return text.content
-                    }
-                    return nil
-                }.joined(separator: "\n")
-
+                let content = extractTextContent(from: response.segments)
                 if !content.isEmpty {
                     messages.append(.assistant(content))
                 }
@@ -237,6 +216,29 @@ extension Agent {
         }
 
         return messages
+    }
+
+    /// Extract text content from transcript segments
+    fileprivate func extractTextContent(from segments: [Transcript.Segment]) -> String {
+        segments.compactMap { segment in
+            if case .text(let text) = segment {
+                return text.content
+            }
+            return nil
+        }.joined(separator: "\n")
+    }
+}
+
+// MARK: - Session Management
+
+extension Agent {
+    /// Create a language model session with transcript
+    fileprivate func createSession(with transcript: Transcript) -> LanguageModelSession {
+        LanguageModelSession(
+            model: model,
+            tools: tools,
+            transcript: transcript
+        )
     }
 }
 
