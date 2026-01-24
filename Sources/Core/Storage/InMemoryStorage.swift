@@ -11,6 +11,10 @@ public actor InMemoryStorage: StorageProtocol {
         return runsStorage[agent.id] ?? []
     }
 
+    public func removeRun(id: UUID, sessionId: UUID) async throws {
+        runsStorage[sessionId]?.removeAll(where: { $0.id == id })
+    }
+
     public func append(_ run: Run, for agent: Agent) async throws {
         runsStorage[agent.id, default: []].append(run)
     }

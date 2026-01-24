@@ -5,6 +5,8 @@ public protocol StorageProtocol: Sendable {
     /// Retrieve all runs for an agent
     func runs(for agent: Agent) async throws -> [Run]
 
+    func removeRun(id: UUID, sessionId: UUID) async throws
+
     /// Append a new run for an agent
     func append(_ run: Run, for agent: Agent) async throws
 

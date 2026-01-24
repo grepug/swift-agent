@@ -94,7 +94,7 @@ extension Agent {
         message: String,
         loadHistory: Bool = true
     ) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        .init { continuation in
             let task = Task {
                 do {
                     // Load transcript with history
