@@ -6,13 +6,15 @@ public struct Agent: Sendable {
     public let id: UUID
     public let name: String
     public let description: String?
-    public let sessionId: UUID
-    public let userId: UUID
 
-    private let model: any LanguageModel
-    private let tools: [any Tool]
-    private let instructions: String?
-    private let storage: StorageProtocol
+    public var sessionId: UUID
+    public var userId: UUID
+
+    package let model: any LanguageModel
+    package var tools: [any Tool]
+    package let mcpServers: [MCPServerConfiguration]
+    package let instructions: String?
+    package let storage: StorageProtocol
 
     public init(
         id: UUID = UUID(),
@@ -23,7 +25,8 @@ public struct Agent: Sendable {
         model: any LanguageModel,
         storage: StorageProtocol = InMemoryStorage(),
         instructions: String? = nil,
-        tools: [any Tool] = []
+        tools: [any Tool] = [],
+        mcpServers: [MCPServerConfiguration] = []
     ) {
         self.id = id
         self.name = name
@@ -34,6 +37,7 @@ public struct Agent: Sendable {
         self.tools = tools
         self.instructions = instructions
         self.storage = storage
+        self.mcpServers = mcpServers
     }
 }
 

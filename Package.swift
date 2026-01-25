@@ -24,6 +24,7 @@ let package = Package(
         // .package(url: "https://github.com/grepug/AnyLanguageModel.git", branch: "main"),
         .package(path: "/Users/kai/Developer/ai/AnyLanguageModel"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-log", from: "1.9.1"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -31,7 +32,8 @@ let package = Package(
         .target(
             name: "SwiftAgentCore",
             dependencies: [
-                .product(name: "AnyLanguageModel", package: "AnyLanguageModel")
+                .product(name: "AnyLanguageModel", package: "AnyLanguageModel"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/Core"
         ),
@@ -41,7 +43,9 @@ let package = Package(
                 "SwiftAgentCore",
                 .product(name: "AnyLanguageModel", package: "AnyLanguageModel"),
                 .product(name: "Configuration", package: "swift-configuration"),
-            ]
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/Example"
         ),
         .testTarget(
             name: "SwiftAgentCoreTests",
