@@ -19,9 +19,6 @@ actor LiveAgentCenter: AgentCenter {
 
     @Dependency(\.agentObservers) private var observers
 
-    // Track tool execution IDs by callIndex (for correlating started/completed events)
-    private var toolExecutionIds: [Int: UUID] = [:]
-
     init() {}
 
     // MARK: - Event Emission
@@ -493,115 +490,24 @@ extension LiveAgentCenter {
             transcript: transcript
         )
 
-        // Capture agent and session IDs for event handling
-        let agentId = agent.id
+        // Create context for this agent run
+        let context = RunContext(
+            agentId: agent.id,
+            sessionId: sessionId,
+            emitEvent: { [weak self] event in
+                guard let self = self else { return }
+                Task { await self.emit(event) }
+            }
+        )
 
-        // Set up event handler to track tool calls
-        session.onEvent = { [weak self, sessionId] event in
-            guard let self = self else { return }
-
+        // Set up event handler to use the context
+        session.onEvent = { event in
             Task {
-                await self.handleModelEvent(event, agentId: agentId, sessionId: sessionId)
+                await context.handleModelEvent(event)
             }
         }
 
         return session
-    }
-
-    private func handleModelEvent(_ event: ModelEvent, agentId: UUID, sessionId: UUID) {
-        switch event.details {
-        case .requestStarted(let info):
-            // Track the start of an actual API request with full context
-            logger.debug(
-                "API-level model request started",
-                metadata: [
-                    "transcript_entries": .stringConvertible(info.transcriptEntries.count),
-                    "tools": .stringConvertible(info.availableTools.count),
-                ])
-
-            // Emit event for individual API-level model call
-            emit(
-                .modelRequestSending(
-                    requestId: event.id,
-                    transcript: Transcript(entries: info.transcriptEntries),
-                    message: info.promptText,
-                    agentId: agentId,
-                    modelName: event.modelIdentifier,
-                    toolCount: info.availableTools.count,
-                    timestamp: event.timestamp
-                ))
-
-        case .requestCompleted(let info):
-            // This fires for EACH actual API call to the model
-            // Emit response event for this individual API call
-            emit(
-                .modelResponseReceived(
-                    requestId: event.id,
-                    content: info.content,
-                    agentId: agentId,
-                    sessionId: sessionId,
-                    duration: info.duration,
-                    inputTokens: info.tokenUsage?.promptTokens,
-                    outputTokens: info.tokenUsage?.completionTokens,
-                    timestamp: event.timestamp
-                ))
-
-        case .toolCallStarted(let info):
-            // Generate execution ID for this call index
-            let executionId = UUID()
-            toolExecutionIds[info.callIndex] = executionId
-
-            emit(
-                .toolExecutionStarted(
-                    toolName: info.toolName,
-                    arguments: info.arguments,
-                    executionId: executionId,
-                    timestamp: event.timestamp
-                ))
-
-        case .toolCallCompleted(let info):
-            // Use the execution ID from the started event
-            guard let executionId = toolExecutionIds[info.callIndex] else {
-                logger.warning("Tool call completed without matching started event", metadata: ["callIndex": .stringConvertible(info.callIndex)])
-                return
-            }
-
-            emit(
-                .toolExecutionCompleted(
-                    executionId: executionId,
-                    toolName: info.toolName,
-                    result: info.result,
-                    duration: info.duration,
-                    success: true,
-                    timestamp: event.timestamp
-                ))
-
-            // Clean up
-            toolExecutionIds[info.callIndex] = nil
-
-        case .toolCallFailed(let info):
-            // Use the execution ID from the started event
-            guard let executionId = toolExecutionIds[info.callIndex] else {
-                logger.warning("Tool call failed without matching started event", metadata: ["callIndex": .stringConvertible(info.callIndex)])
-                return
-            }
-
-            emit(
-                .toolExecutionCompleted(
-                    executionId: executionId,
-                    toolName: info.toolName,
-                    result: info.errorDescription,
-                    duration: info.duration,
-                    success: false,
-                    timestamp: event.timestamp
-                ))
-
-            // Clean up
-            toolExecutionIds[info.callIndex] = nil
-
-        default:
-            break
-        }
     }
 
     private func extractMessages(from transcript: Transcript) -> [Message] {
