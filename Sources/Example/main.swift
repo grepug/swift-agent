@@ -34,7 +34,9 @@ struct ExampleRunner {
         return doubaoModel
     }
 
-    static func getAgent() async throws -> Agent {
+    static func setupAgentCenter() async -> UUID {
+        @Dependency(\.agentCenter) var center
+
         let context7Server = MCPServerConfiguration(
             name: "Context7",
             transport: .http(
@@ -82,8 +84,7 @@ struct ExampleRunner {
         let calculator = CalculatorTool()
         let doubaoModel = await model(config: makeConfig())
 
-        @Dependency(\.agentCenter) var center
-
+        // Configure AgentCenter
         await center.register(model: doubaoModel, named: "doubao")
         await center.register(tool: calculator)
         await center.register(mcpServerConfiguration: context7Server)
@@ -117,17 +118,12 @@ struct ExampleRunner {
         )
 
         await center.register(agent: agent)
-
-        return try await center.useAgent(
-            id: agent.id,
-            sessionId: UUID(),
-            userId: UUID()
-        )
+        return agent.id
     }
 
     static func getAgent2() async throws -> Agent {
         let config = await makeConfig()
-        let agent = Agent(
+        return Agent(
             id: UUID(),
             name: "xxxx",
             description: "",
@@ -137,30 +133,39 @@ struct ExampleRunner {
                 """,
             toolNames: []
         )
-
-        return agent
     }
 
     static func main() async throws {
         LoggingSystem.bootstrap(ModernOSLogHandler.init)
 
-        // Setup AgentCenter
-        // let center = AgentCenter()
         @Dependency(\.agentCenter) var center
 
-        let agent = try await getAgent()
+        // Setup AgentCenter with configuration and get agent ID
+        let agentId = await setupAgentCenter()
 
-        print("Agent created: \(agent.name)")
-        print("Session ID: \(agent.sessionId)")
+        // User constructs the session context themselves
+        let session = AgentSessionContext(
+            agentId: agentId,
+            userId: UUID(),
+            sessionId: UUID()
+        )
 
-        // Run examples with the configured dependency
+        print("Agent session created")
+        print("User ID: \(session.userId)")
+        print("Session ID: \(session.sessionId)")
+
         // Example 1: Regular run with tool calling
         print("=== Example 1: Tool Calling ===")
         // let message = "What are 123^123 and 123 + 123?"
         let message = "summerize https://www.youtube.com/watch?v=fT6kGrHtf9k"
         print("User: \(message)\n")
 
-        let run = try await agent.run(message: message, as: String.self)
+        let run = try await center.runAgent(
+            session: session,
+            message: message,
+            as: String.self,
+            loadHistory: true
+        )
         print("✅ Assistant: \(try run.asString())")
         print("Run ID: \(run.id)")
         print("Messages: \(run.messages.count)\n")
@@ -170,10 +175,11 @@ struct ExampleRunner {
         let moviePrompt = "Recommend 3 sci-fi movie about AI"
         print("User: \(moviePrompt)\n")
 
-        let run2 = try await agent.run(
+        let run2 = try await center.runAgent(
+            session: session,
             message: moviePrompt,
             as: [MovieRecommendation].self,
-            loadHistory: false,
+            loadHistory: false
         )
 
         let decoded = try run2.decoded(as: [MovieRecommendation].self)
@@ -264,13 +270,9 @@ enum ToolError: Error {
             public init(label: String) {
                 // Split label into subsystem and category
                 let components = label.split(separator: ".", maxSplits: 2)
-                let subsystem =
-                    components.count > 1
-                    ? components[0..<components.count - 1].joined(separator: ".")
-                    : label
                 let category = components.last.map(String.init) ?? "default"
 
-                self.osLogger = os.Logger(subsystem: subsystem, category: category)
+                self.osLogger = os.Logger(subsystem: "SwiftAgentExample", category: category)
             }
 
             public func log(
