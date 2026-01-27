@@ -7,6 +7,21 @@ import SwiftAgentCore
 
 @main
 struct ExampleRunner {
+    static func makeObservers() async -> [any AgentCenterObserver] {
+        // Check for debug directory from environment
+        if let debugDir = ProcessInfo.processInfo.environment["SWIFT_AGENT_DEBUG_DIR"] {
+            let url = URL(fileURLWithPath: debugDir)
+            print("📊 Debug logging enabled to: \(debugDir)")
+            return [
+                ConsoleObserver(verbose: false),
+                FileDebugObserver(directory: url),
+            ]
+        }
+
+        // Default: console observer only
+        return [ConsoleObserver()]
+    }
+
     static func makeConfig() async -> ConfigReader {
         ConfigReader(
             providers: [
@@ -100,7 +115,7 @@ struct ExampleRunner {
             modelName: "doubao",
             instructions: """
                 You are a helpful AI assistant. 
-                When asked to do calculations, use the calculator tool.
+                When asked to do calculations, you MUST use the calculator tool.
                 If not asked to do calculations, don't use tool.
                 If user asks for information about a gihub repository, use the MCP tools to fetch the information.
                 If user asks for browsing the web, use the Playwright MCP tool to fetch the information.
@@ -109,11 +124,11 @@ struct ExampleRunner {
                 """,
             toolNames: [calculator.name],
             mcpServerNames: [
-                context7Server.name,
-                deepwikiServer.name,
-                playwrightServer.name,
-                tavilyServer.name,
-                youtubeTranscriptServer.name,
+                // context7Server.name,
+                // deepwikiServer.name,
+                // playwrightServer.name,
+                // tavilyServer.name,
+                youtubeTranscriptServer.name
             ],
         )
 
@@ -138,53 +153,59 @@ struct ExampleRunner {
     static func main() async throws {
         LoggingSystem.bootstrap(ModernOSLogHandler.init)
 
-        @Dependency(\.agentCenter) var center
+        // Configure observers
+        try await withDependencies {
+            $0.agentObservers = await makeObservers()
+        } operation: {
+            @Dependency(\.agentCenter) var center
 
-        // Setup AgentCenter with configuration and get agent ID
-        let agentId = await setupAgentCenter()
+            // Setup AgentCenter with configuration and get agent ID
+            let agentId = await setupAgentCenter()
 
-        // User constructs the session context themselves
-        let session = AgentSessionContext(
-            agentId: agentId,
-            userId: UUID(),
-            sessionId: UUID()
-        )
+            // User constructs the session context themselves
+            let session = AgentSessionContext(
+                agentId: agentId,
+                userId: UUID(),
+                sessionId: UUID()
+            )
 
-        print("Agent session created")
-        print("User ID: \(session.userId)")
-        print("Session ID: \(session.sessionId)")
+            print("Agent session created")
+            print("User ID: \(session.userId)")
+            print("Session ID: \(session.sessionId)")
 
-        // Example 1: Regular run with tool calling
-        print("=== Example 1: Tool Calling ===")
-        // let message = "What are 123^123 and 123 + 123?"
-        let message = "summerize https://www.youtube.com/watch?v=fT6kGrHtf9k"
-        print("User: \(message)\n")
+            // Example 1: Regular run with tool calling
+            print("=== Example 1: Tool Calling ===")
+            // let message = "What are 123^123 and 123 + 123?"
+            // let message = "summerize https://www.youtube.com/watch?v=fT6kGrHtf9k"
+            let message = "what is 123*321?"
+            print("User: \(message)\n")
 
-        let run = try await center.runAgent(
-            session: session,
-            message: message,
-            as: String.self,
-            loadHistory: true
-        )
-        print("✅ Assistant: \(try run.asString())")
-        print("Run ID: \(run.id)")
-        print("Messages: \(run.messages.count)\n")
+            let run = try await center.runAgent(
+                session: session,
+                message: message,
+                as: String.self,
+                loadHistory: true
+            )
+            print("✅ Assistant: \(try run.asString())")
+            print("Run ID: \(run.id)")
+            print("Messages: \(run.messages.count)\n")
 
-        // Example 2: Structured output using schema injection
-        print("\n=== Example 2: Structured Output ===")
-        let moviePrompt = "Recommend 3 sci-fi movie about AI"
-        print("User: \(moviePrompt)\n")
+            // Example 2: Structured output using schema injection
+            // print("\n=== Example 2: Structured Output ===")
+            // let moviePrompt = "Recommend 3 sci-fi movie about AI"
+            // print("User: \(moviePrompt)\n")
 
-        let run2 = try await center.runAgent(
-            session: session,
-            message: moviePrompt,
-            as: [MovieRecommendation].self,
-            loadHistory: false
-        )
+            // let run2 = try await center.runAgent(
+            //     session: session,
+            //     message: moviePrompt,
+            //     as: [MovieRecommendation].self,
+            //     loadHistory: false
+            // )
 
-        let decoded = try run2.decoded(as: [MovieRecommendation].self)
+            // let decoded = try run2.decoded(as: [MovieRecommendation].self)
 
-        print("✅ Movie Recommendations:", decoded)
+            // print("✅ Movie Recommendations:", decoded)
+        }
     }
 }
 
