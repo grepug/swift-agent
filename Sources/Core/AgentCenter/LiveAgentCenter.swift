@@ -18,7 +18,11 @@ actor LiveAgentCenter: AgentCenter {
     private var mcpServerConfigurations: [String: MCPServerConfiguration] = [:]
 
     init() {}
+}
 
+// MARK: - Loading from Configuration
+
+extension LiveAgentCenter {
     func load(configuration: AgentConfiguration) async throws {
         logger.info(
             "Loading agent configuration",
@@ -28,42 +32,111 @@ actor LiveAgentCenter: AgentCenter {
                 "mcp.count": .stringConvertible(configuration.mcpServers.count),
             ])
 
-        // Step 1: Validate for duplicates
+        // Step 1: Validate for duplicates within the configuration
 
-        // Check for duplicate model names
+        try validateNoDuplicateModels(in: configuration)
+        try validateNoDuplicateMCPServers(in: configuration)
+        try validateNoDuplicateAgents(in: configuration)
+
+        // Step 2: Check for conflicts with already registered items
+
+        try checkForModelConflicts(in: configuration)
+        try checkForMCPServerConflicts(in: configuration)
+        try checkForAgentConflicts(in: configuration)
+
+        // Step 3: Validate all agent references (before registering anything)
+
+        try await validateAgentReferences(in: configuration)
+
+        // Step 4: All validations passed - now register everything
+
+        await registerModels(from: configuration)
+        await registerMCPServers(from: configuration)
+        await registerAgents(from: configuration)
+
+        logger.info(
+            "Agent configuration loaded successfully",
+            metadata: [
+                "model.count": .stringConvertible(configuration.models.count),
+                "agent.count": .stringConvertible(configuration.agents.count),
+                "mcp.count": .stringConvertible(configuration.mcpServers.count),
+            ])
+    }
+
+    // MARK: - Validation Helpers
+
+    private func validateNoDuplicateModels(in configuration: AgentConfiguration) throws {
         let modelNames = configuration.models.map { $0.name }
-        let duplicateModels = Set(modelNames.filter { name in modelNames.filter { $0 == name }.count > 1 })
-        if !duplicateModels.isEmpty {
+        let duplicates = Set(modelNames.filter { name in modelNames.filter { $0 == name }.count > 1 })
+        if !duplicates.isEmpty {
             throw AgentError.invalidConfiguration(
-                "Duplicate model names found: \(duplicateModels.joined(separator: ", "))"
+                "Duplicate model names found in configuration: \(duplicates.sorted().joined(separator: ", "))"
             )
         }
+    }
 
-        // Check for duplicate MCP server names
-        let mcpServerNames = configuration.mcpServers.map { $0.name }
-        let duplicateMCPServers = Set(mcpServerNames.filter { name in mcpServerNames.filter { $0 == name }.count > 1 })
-        if !duplicateMCPServers.isEmpty {
+    private func validateNoDuplicateMCPServers(in configuration: AgentConfiguration) throws {
+        let serverNames = configuration.mcpServers.map { $0.name }
+        let duplicates = Set(serverNames.filter { name in serverNames.filter { $0 == name }.count > 1 })
+        if !duplicates.isEmpty {
             throw AgentError.invalidConfiguration(
-                "Duplicate MCP server names found: \(duplicateMCPServers.joined(separator: ", "))"
+                "Duplicate MCP server names found in configuration: \(duplicates.sorted().joined(separator: ", "))"
             )
         }
+    }
 
-        // Check for duplicate agent IDs
+    private func validateNoDuplicateAgents(in configuration: AgentConfiguration) throws {
         let agentIDs = configuration.agents.map { $0.id }
-        let duplicateAgentIDs = Set(agentIDs.filter { id in agentIDs.filter { $0 == id }.count > 1 })
-        if !duplicateAgentIDs.isEmpty {
+        let duplicates = Set(agentIDs.filter { id in agentIDs.filter { $0 == id }.count > 1 })
+        if !duplicates.isEmpty {
             throw AgentError.invalidConfiguration(
-                "Duplicate agent IDs found: \(duplicateAgentIDs.map { $0.uuidString }.joined(separator: ", "))"
+                "Duplicate agent IDs found in configuration: \(duplicates.map { $0.uuidString }.sorted().joined(separator: ", "))"
             )
         }
+    }
 
-        // Step 2: Validate all agent references (before registering anything)
+    private func checkForModelConflicts(in configuration: AgentConfiguration) throws {
+        let existingModelNames = Set(models.keys)
+        let newModelNames = Set(configuration.models.map { $0.name })
+        let conflicts = newModelNames.intersection(existingModelNames)
 
+        if !conflicts.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Configuration contains model names that are already registered: \(conflicts.sorted().joined(separator: ", ")). Unregister them first or use different names."
+            )
+        }
+    }
+
+    private func checkForMCPServerConflicts(in configuration: AgentConfiguration) throws {
+        let existingServerNames = Set(mcpServerConfigurations.keys)
+        let newServerNames = Set(configuration.mcpServers.map { $0.name })
+        let conflicts = newServerNames.intersection(existingServerNames)
+
+        if !conflicts.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Configuration contains MCP server names that are already registered: \(conflicts.sorted().joined(separator: ", ")). Unregister them first or use different names."
+            )
+        }
+    }
+
+    private func checkForAgentConflicts(in configuration: AgentConfiguration) throws {
+        let existingAgentIDs = Set(agents.keys)
+        let newAgentIDs = Set(configuration.agents.map { $0.id })
+        let conflicts = newAgentIDs.intersection(existingAgentIDs)
+
+        if !conflicts.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Configuration contains agent IDs that are already registered: \(conflicts.map { $0.uuidString }.sorted().joined(separator: ", ")). Unregister them first or use different IDs."
+            )
+        }
+    }
+
+    private func validateAgentReferences(in configuration: AgentConfiguration) async throws {
         // Collect all model names that will be available (existing + new from config)
-        let availableModelNames = Set(modelNames + models.keys)
+        let availableModelNames = Set(models.keys).union(configuration.models.map { $0.name })
 
         // Collect all MCP server names that will be available (existing + new from config)
-        let availableMCPServerNames = Set(mcpServerNames + mcpServerConfigurations.keys)
+        let availableMCPServerNames = Set(mcpServerConfigurations.keys).union(configuration.mcpServers.map { $0.name })
 
         // Validate each agent's references
         for agent in configuration.agents {
@@ -87,15 +160,16 @@ actor LiveAgentCenter: AgentCenter {
             for mcpServerName in agent.mcpServerNames {
                 if !availableMCPServerNames.contains(mcpServerName) {
                     throw AgentError.invalidConfiguration(
-                        "Agent '\(agent.name)' references unknown MCP server '\(mcpServerName)'. Ensure it's defined in the 'mcpServers' array."
+                        "Agent '\(agent.name)' references unknown MCP server '\(mcpServerName)'. Ensure it's defined in the 'mcpServers' array or registered beforehand."
                     )
                 }
             }
         }
+    }
 
-        // Step 3: All validations passed - now register everything
+    // MARK: - Registration Helpers
 
-        // Register models
+    private func registerModels(from configuration: AgentConfiguration) async {
         for modelConfig in configuration.models {
             let openAIModel = OpenAILanguageModel(
                 baseURL: modelConfig.baseURL,
@@ -104,24 +178,18 @@ actor LiveAgentCenter: AgentCenter {
             )
             await register(model: openAIModel, named: modelConfig.name)
         }
+    }
 
-        // Register MCP servers
+    private func registerMCPServers(from configuration: AgentConfiguration) async {
         for mcpConfig in configuration.mcpServers {
             await register(mcpServerConfiguration: mcpConfig)
         }
+    }
 
-        // Register agents
+    private func registerAgents(from configuration: AgentConfiguration) async {
         for agent in configuration.agents {
             await register(agent: agent)
         }
-
-        logger.info(
-            "Agent configuration loaded successfully",
-            metadata: [
-                "model.count": .stringConvertible(configuration.models.count),
-                "agent.count": .stringConvertible(configuration.agents.count),
-                "mcp.count": .stringConvertible(configuration.mcpServers.count),
-            ])
     }
 }
 

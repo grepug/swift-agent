@@ -187,12 +187,6 @@ try await agentCenter.load(configuration: config)
       "baseURL": "https://api.openai.com/v1",
       "id": "gpt-4",
       "apiKey": "sk-your-api-key-here"
-    },
-    {
-      "name": "claude-3-sonnet",
-      "baseURL": "https://api.anthropic.com/v1",
-      "id": "claude-3-sonnet-20240229",
-      "apiKey": "sk-ant-your-api-key-here"
     }
   ],
   "agents": [
