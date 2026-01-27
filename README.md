@@ -64,23 +64,158 @@ Persistence layer for:
 
 ## Usage
 
+### Basic Programmatic Usage
+
 ```swift
 import SwiftAgentCore
+import AnyLanguageModel
 
-// Create a model (mock or real LLM)
-let model = MockModel(responses: ["Hello!"])
+// 1. Set up the agent center
+@Dependency(\.agentCenter) var agentCenter
 
-// Create an agent
+// 2. Register models
+await agentCenter.register(model: myOpenAIModel, named: "gpt-4")
+await agentCenter.register(model: myClaudeModel, named: "claude-3-sonnet")
+
+// 3. Register native Swift tools (optional)
+await agentCenter.register(tool: SearchTool())
+await agentCenter.register(tool: FileReaderTool())
+
+// 4. Create and register an agent
 let agent = Agent(
-    name: "My Agent",
-    model: model,
-    instructions: ["You are a helpful assistant."],
-    tools: [CalculatorTool()]
+    name: "CodeReviewer",
+    description: "Reviews code and suggests improvements",
+    modelName: "gpt-4",
+    instructions: "You are an expert code reviewer.",
+    toolNames: ["search-tool"],
+    mcpServerNames: ["filesystem"]
+)
+await agentCenter.register(agent: agent)
+
+// 5. Run the agent
+let session = AgentSessionContext(
+    agentId: agent.id,
+    userId: UUID()
+)
+let run = try await agentCenter.runAgent(
+    session: session,
+    message: "Review this Swift code...",
+    as: String.self,
+    loadHistory: true
+)
+```
+
+### Loading from Configuration
+
+You can load models, agents, and MCP servers from a configuration object. Models defined in the config will be automatically registered as OpenAI-compatible language models.
+
+#### Option 1: Load from JSON File
+
+```swift
+import SwiftAgentCore
+import AnyLanguageModel
+
+// 1. Create the agent center
+let agentCenter = LiveAgentCenter()
+
+// 2. Optionally register native Swift tools (if any are referenced in the config)
+await agentCenter.register(tool: SearchTool())
+await agentCenter.register(tool: FileReaderTool())
+
+// 3. Load configuration from JSON file (includes models, agents, and MCP servers)
+let configURL = URL(fileURLWithPath: "agent-config.json")
+let data = try Data(contentsOf: configURL)
+let config = try JSONDecoder().decode(AgentConfiguration.self, from: data)
+try await agentCenter.load(configuration: config)
+
+// 4. Use the agents defined in the config
+let agent = await agentCenter.agent(id: myAgentId)
+```
+
+#### Option 2: Hardcode Configuration
+
+```swift
+import SwiftAgentCore
+import AnyLanguageModel
+
+// 1. Create the agent center
+let agentCenter = LiveAgentCenter()
+
+// 2. Create configuration programmatically
+let config = AgentConfiguration(
+    models: [
+        AgentModel(
+            name: "gpt-4",
+            baseURL: URL(string: "https://api.openai.com/v1")!,
+            id: "gpt-4",
+            apiKey: "sk-..."
+        )
+    ],
+    agents: [
+        Agent(
+            name: "CodeReviewer",
+            description: "Reviews code",
+            modelName: "gpt-4",
+            instructions: "You are an expert code reviewer.",
+            toolNames: [],
+            mcpServerNames: ["filesystem"]
+        )
+    ],
+    mcpServers: [
+        MCPServerConfiguration(
+            name: "filesystem",
+            transport: .stdio(
+                command: "npx",
+                arguments: ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+                env: [:]
+            )
+        )
+    ]
 )
 
-// Run the agent
-let run = try await agent.run(message: "Hello!")
-print(run.content ?? "")
+// 3. Load the configuration
+try await agentCenter.load(configuration: config)
+```
+
+**Example Configuration File** (`agent-config.json`):
+
+```json
+{
+  "models": [
+    {
+      "name": "gpt-4",
+      "baseURL": "https://api.openai.com/v1",
+      "id": "gpt-4",
+      "apiKey": "sk-your-api-key-here"
+    }
+  ],
+  "agents": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "CodeReviewer",
+      "description": "Reviews code and suggests improvements",
+      "modelName": "gpt-4",
+      "instructions": "You are an expert code reviewer.",
+      "toolNames": ["search-tool"],
+      "mcpServerNames": ["filesystem"]
+    }
+  ],
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "arguments": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "/path/to/dir"
+        ],
+        "env": {}
+      }
+    }
+  ]
+}
 ```
 
 ## File Structure
