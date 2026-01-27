@@ -161,7 +161,6 @@ let config = AgentConfiguration(
             mcpServerNames: ["filesystem"]
         )
     ],
-    tools: [],
     mcpServers: [
         MCPServerConfiguration(
             name: "filesystem",
@@ -207,7 +206,6 @@ try await agentCenter.load(configuration: config)
       "mcpServerNames": ["filesystem"]
     }
   ],
-  "tools": ["search-tool", "file-reader"],
   "mcpServers": [
     {
       "name": "filesystem",

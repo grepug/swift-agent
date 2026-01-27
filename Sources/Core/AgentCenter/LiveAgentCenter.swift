@@ -61,6 +61,15 @@ actor LiveAgentCenter: AgentCenter {
                 }
             }
 
+            // Validate MCP server references
+            for mcpServerName in agent.mcpServerNames {
+                if await mcpServerConfiguration(named: mcpServerName) == nil {
+                    throw AgentError.invalidConfiguration(
+                        "Agent '\(agent.name)' references unknown MCP server '\(mcpServerName)'. Ensure it's defined in the 'mcpServers' array."
+                    )
+                }
+            }
+
             await register(agent: agent)
         }
 

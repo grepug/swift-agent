@@ -31,7 +31,7 @@ public struct AgentModel: Sendable, Codable, Hashable {
     }
 }
 
-/// Configuration structure for loading agents, tools, models, and MCP servers
+/// Configuration structure for loading agents, models, and MCP servers
 public struct AgentConfiguration: Sendable, Codable {
     /// List of model configurations to register
     public let models: [AgentModel]
@@ -39,21 +39,16 @@ public struct AgentConfiguration: Sendable, Codable {
     /// List of agents to register
     public let agents: [Agent]
 
-    /// List of tool names (for reference/validation)
-    public let tools: [String]
-
     /// MCP server configurations to register
     public let mcpServers: [MCPServerConfiguration]
 
     public init(
         models: [AgentModel] = [],
         agents: [Agent] = [],
-        tools: [String] = [],
         mcpServers: [MCPServerConfiguration] = []
     ) {
         self.models = models
         self.agents = agents
-        self.tools = tools
         self.mcpServers = mcpServers
     }
 }

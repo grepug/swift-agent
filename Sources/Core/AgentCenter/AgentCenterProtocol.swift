@@ -74,7 +74,6 @@ public protocol AgentCenter: Sendable {
     ///         )
     ///     ],
     ///     agents: [myAgent],
-    ///     tools: ["search-tool"],
     ///     mcpServers: [fileSystemConfig]
     /// )
     /// try await agentCenter.load(configuration: config)
