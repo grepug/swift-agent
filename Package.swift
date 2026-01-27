@@ -25,6 +25,7 @@ let package = Package(
         .package(path: "/Users/kai/Developer/ai/AnyLanguageModel"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.9.1"),
+        .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.0.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -34,6 +35,7 @@ let package = Package(
             dependencies: [
                 .product(name: "AnyLanguageModel", package: "AnyLanguageModel"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Dependencies", package: "swift-dependencies"),
             ],
             path: "Sources/Core"
         ),

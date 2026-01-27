@@ -1,5 +1,6 @@
 import AnyLanguageModel
 import Configuration
+import Dependencies
 import Foundation
 import Logging
 import SwiftAgentCore
@@ -20,7 +21,7 @@ struct ExampleRunner {
     static func model(config: ConfigReader) -> OpenAILanguageModel {
         let apiKey = config.string(forKey: "DOUBAO_API_KEY")!
         let baseURL = config.string(forKey: "DOUBAO_API_URL")!
-        let doubaoFlashModelId = config.string(forKey: "DOUBAO_FLASH_MODEL_ID")!
+        _ = config.string(forKey: "DOUBAO_FLASH_MODEL_ID")!
         let doubao1_6Id = config.string(forKey: "DOUBAO_1_6_ID")!
 
         // Create OpenAI model
@@ -81,11 +82,21 @@ struct ExampleRunner {
         let calculator = CalculatorTool()
         let doubaoModel = await model(config: makeConfig())
 
+        @Dependency(\.agentCenter) var center
+
+        await center.register(model: doubaoModel, named: "doubao")
+        await center.register(tool: calculator)
+        await center.register(mcpServerConfiguration: context7Server)
+        await center.register(mcpServerConfiguration: deepwikiServer)
+        await center.register(mcpServerConfiguration: playwrightServer)
+        await center.register(mcpServerConfiguration: tavilyServer)
+        await center.register(mcpServerConfiguration: youtubeTranscriptServer)
+
         // Create an agent
         let agent = Agent(
             name: "AI Assistant",
             description: "A helpful AI assistant with calculator",
-            model: doubaoModel,
+            modelName: "doubao",
             instructions: """
                 You are a helpful AI assistant. 
                 When asked to do calculations, use the calculator tool.
@@ -95,18 +106,17 @@ struct ExampleRunner {
                 If user asks for general knowledge questions, use the Tavily MCP tool to fetch the information.
                 If user asks for YouTube transcript, use the YouTube Transcript MCP tool to fetch the information.
                 """,
-            tools: [calculator],
-            mcpServers: [
-                context7Server,
-                deepwikiServer,
-                playwrightServer,
-                tavilyServer,
-                youtubeTranscriptServer,
+            toolNames: [calculator.name],
+            mcpServerNames: [
+                context7Server.name,
+                deepwikiServer.name,
+                playwrightServer.name,
+                tavilyServer.name,
+                youtubeTranscriptServer.name,
             ],
         )
 
-        let center = AgentCenter(agents: [agent])
-        try await center.start()
+        await center.register(agent: agent)
 
         return try await center.useAgent(
             id: agent.id,
@@ -120,11 +130,12 @@ struct ExampleRunner {
         let agent = Agent(
             id: UUID(),
             name: "xxxx",
-            model: model(config: config),
+            description: "",
+            modelName: model(config: config).model,
             instructions: """
 
                 """,
-            tools: []
+            toolNames: []
         )
 
         return agent
@@ -133,11 +144,16 @@ struct ExampleRunner {
     static func main() async throws {
         LoggingSystem.bootstrap(ModernOSLogHandler.init)
 
+        // Setup AgentCenter
+        // let center = AgentCenter()
+        @Dependency(\.agentCenter) var center
+
         let agent = try await getAgent()
 
         print("Agent created: \(agent.name)")
         print("Session ID: \(agent.sessionId)")
 
+        // Run examples with the configured dependency
         // Example 1: Regular run with tool calling
         print("=== Example 1: Tool Calling ===")
         // let message = "What are 123^123 and 123 + 123?"

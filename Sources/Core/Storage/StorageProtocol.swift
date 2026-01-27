@@ -1,3 +1,4 @@
+import Dependencies
 import Foundation
 
 /// Protocol for storing agent runs and session state
@@ -15,4 +16,16 @@ public protocol StorageProtocol: Sendable {
 
     /// Update session state for an agent
     func updateSessionState(_ state: AnyCodable, for agent: Agent, sessionId: UUID) async throws
+}
+
+extension DependencyValues {
+    public var storage: StorageProtocol {
+        get { self[StorageKey.self] }
+        set { self[StorageKey.self] = newValue }
+    }
+
+    private enum StorageKey: DependencyKey {
+        static let liveValue: StorageProtocol = InMemoryStorage()
+        static let testValue: StorageProtocol = InMemoryStorage()
+    }
 }

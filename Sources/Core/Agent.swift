@@ -1,43 +1,47 @@
 import AnyLanguageModel
+import Dependencies
 import Foundation
 
+struct AgentSessionContext: Sendable, Codable, Hashable {
+    let agent: Agent
+    let userId: UUID
+    let sessionId: UUID
+}
+
 /// The core agent that orchestrates model interactions and storage
-public struct Agent: Sendable {
+public struct Agent: Sendable, Codable, Hashable {
     public let id: UUID
     public let name: String
-    public let description: String?
+    public let description: String
 
     public var sessionId: UUID
     public var userId: UUID
 
-    package let model: any LanguageModel
-    package var tools: [any Tool]
-    package let mcpServers: [MCPServerConfiguration]
+    package let modelName: String
+    package var toolNames: [String]
+    package let mcpServerNames: [String]
     package let instructions: String?
-    package let storage: StorageProtocol
 
     public init(
         id: UUID = UUID(),
-        name: String = "Default Agent",
-        description: String? = nil,
+        name: String,
+        description: String,
         sessionId: UUID = UUID(),
         userId: UUID = UUID(),
-        model: any LanguageModel,
-        storage: StorageProtocol = InMemoryStorage(),
+        modelName: String,
         instructions: String? = nil,
-        tools: [any Tool] = [],
-        mcpServers: [MCPServerConfiguration] = []
+        toolNames: [String] = [],
+        mcpServerNames: [String] = []
     ) {
         self.id = id
         self.name = name
         self.description = description
         self.sessionId = sessionId
         self.userId = userId
-        self.model = model
-        self.tools = tools
+        self.modelName = modelName
+        self.toolNames = toolNames
         self.instructions = instructions
-        self.storage = storage
-        self.mcpServers = mcpServers
+        self.mcpServerNames = mcpServerNames
     }
 }
 
@@ -58,7 +62,7 @@ extension Agent {
         let transcript = try await loadTranscript(includeHistory: loadHistory)
 
         // Create session with conversation history
-        let session = createSession(with: transcript)
+        let session = await createSession(with: transcript)
 
         // Use AnyLanguageModel's session to handle the conversation
         let response = try await session.respond(to: message, generating: T.self)
@@ -84,6 +88,7 @@ extension Agent {
         )
 
         // Save to storage
+        @Dependency(\.storage) var storage
         try await storage.append(run, for: self)
 
         return run
@@ -105,7 +110,7 @@ extension Agent {
                     let transcript = try await loadTranscript(includeHistory: loadHistory)
 
                     // Create session with history
-                    let session = createSession(with: transcript)
+                    let session = await createSession(with: transcript)
 
                     // Use respond() which handles tool calls automatically
                     let response = try await session.respond { Prompt(message) }
@@ -129,19 +134,39 @@ extension Agent {
 // MARK: - Transcript Management
 
 extension Agent {
+    fileprivate func tools() async -> [any Tool] {
+        @Dependency(\.agentCenter) var agentCenter
+        var result: [any Tool] = []
+        for toolName in toolNames {
+            if let tool = await agentCenter.tool(named: toolName) {
+                result.append(tool)
+            }
+        }
+        return result
+    }
+
+    fileprivate func model() async -> any LanguageModel {
+        @Dependency(\.agentCenter) var agentCenter
+        guard let model = await agentCenter.model(named: modelName) else {
+            fatalError("Model '\(modelName)' not registered in AgentCenter")
+        }
+        return model
+    }
+
     /// Load transcript with optional history
     fileprivate func loadTranscript(includeHistory: Bool) async throws -> Transcript {
+        @Dependency(\.storage) var storage
         let previousRuns = includeHistory ? try await storage.runs(for: self) : []
-        return try buildTranscript(from: previousRuns)
+        return try await buildTranscript(from: previousRuns)
     }
 
     /// Build a Transcript from previous runs
-    fileprivate func buildTranscript(from runs: [Run]) throws -> Transcript {
+    fileprivate func buildTranscript(from runs: [Run]) async throws -> Transcript {
         var entries: [Transcript.Entry] = []
 
         // Add instructions if available
         if let instructions = instructions {
-            let toolDefs = tools.map { Transcript.ToolDefinition(tool: $0) }
+            let toolDefs = await tools().map { Transcript.ToolDefinition(tool: $0) }
             let instructionsEntry = Transcript.Entry.instructions(
                 Transcript.Instructions(
                     segments: [.text(.init(content: instructions))],
@@ -237,10 +262,10 @@ extension Agent {
 
 extension Agent {
     /// Create a language model session with transcript
-    fileprivate func createSession(with transcript: Transcript) -> LanguageModelSession {
+    fileprivate func createSession(with transcript: Transcript) async -> LanguageModelSession {
         LanguageModelSession(
-            model: model,
-            tools: tools,
+            model: await model(),
+            tools: await tools(),
             transcript: transcript
         )
     }
