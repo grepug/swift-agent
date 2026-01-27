@@ -64,12 +64,12 @@ public struct AgentConfiguration: Sendable, Codable {
 
 /// Represents a session context for executing an agent
 public struct AgentSessionContext: Sendable, Codable, Hashable {
-    public let agentId: UUID
+    public let agentId: String
     public let userId: UUID
     public let sessionId: UUID
 
     public init(
-        agentId: UUID,
+        agentId: String,
         userId: UUID,
         sessionId: UUID = UUID()
     ) {
@@ -81,7 +81,7 @@ public struct AgentSessionContext: Sendable, Codable, Hashable {
 
 /// The core agent descriptor - immutable definition of an agent's capabilities
 public struct Agent: Sendable, Codable, Hashable {
-    public let id: UUID
+    public let id: String
     public let name: String
     public let description: String
 
@@ -91,7 +91,7 @@ public struct Agent: Sendable, Codable, Hashable {
     package let instructions: String
 
     public init(
-        id: UUID = UUID(),
+        id: String,
         name: String,
         description: String,
         modelName: String,
@@ -112,7 +112,7 @@ public struct Agent: Sendable, Codable, Hashable {
 // MARK: - Agent Errors
 
 public enum AgentError: Error, CustomStringConvertible {
-    case agentNotFound(UUID)
+    case agentNotFound(String)
     case modelNotFound(String)
     case noResponseFromModel
     case invalidConfiguration(String)

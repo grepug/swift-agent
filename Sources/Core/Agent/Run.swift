@@ -3,7 +3,7 @@ import Foundation
 /// Represents the result of an agent execution
 public struct Run: Sendable, Codable, Identifiable {
     public let id: UUID
-    public let agentId: UUID
+    public let agentId: String
     public let sessionId: UUID
     public let userId: UUID
     public let messages: [Message]
@@ -12,7 +12,7 @@ public struct Run: Sendable, Codable, Identifiable {
 
     public init(
         id: UUID = UUID(),
-        agentId: UUID,
+        agentId: String,
         sessionId: UUID,
         userId: UUID,
         messages: [Message],

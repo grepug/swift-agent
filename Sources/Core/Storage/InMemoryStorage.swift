@@ -2,8 +2,8 @@ import Foundation
 
 /// In-memory implementation of storage (for development/testing)
 public actor InMemoryStorage: StorageProtocol {
-    private var runsStorage: [UUID: [Run]] = [:]
-    private var sessionStateStorage: [UUID: [UUID: AnyCodable]] = [:]
+    private var runsStorage: [String: [Run]] = [:]
+    private var sessionStateStorage: [String: [UUID: AnyCodable]] = [:]
 
     public init() {}
 
@@ -12,7 +12,13 @@ public actor InMemoryStorage: StorageProtocol {
     }
 
     public func removeRun(id: UUID, sessionId: UUID) async throws {
-        runsStorage[sessionId]?.removeAll(where: { $0.id == id })
+        // Need to find which agent this run belongs to
+        for (agentId, runs) in runsStorage {
+            if runs.contains(where: { $0.id == id }) {
+                runsStorage[agentId]?.removeAll(where: { $0.id == id })
+                return
+            }
+        }
     }
 
     public func append(_ run: Run, for agent: Agent) async throws {

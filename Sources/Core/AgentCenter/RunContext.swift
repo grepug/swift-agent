@@ -5,7 +5,7 @@ import Logging
 /// Represents the runtime context for a single agent execution.
 /// Each agent run gets its own isolated runtime to avoid state conflicts when running multiple agents concurrently.
 actor RunContext {
-    let agentId: UUID
+    let agentId: String
     let sessionId: UUID
 
     // Track tool execution IDs by callIndex (for correlating started/completed events)
@@ -15,7 +15,7 @@ actor RunContext {
     private let logger = Logger(label: "RunContext")
 
     init(
-        agentId: UUID,
+        agentId: String,
         sessionId: UUID,
         emitEvent: @escaping @Sendable (AgentCenterEvent) -> Void
     ) {
@@ -31,7 +31,7 @@ actor RunContext {
             logger.debug(
                 "API-level model request started",
                 metadata: [
-                    "agent.id": .string(agentId.uuidString),
+                    "agent.id": .string(agentId),
                     "session.id": .string(sessionId.uuidString),
                     "transcript_entries": .stringConvertible(info.transcriptEntries.count),
                     "tools": .stringConvertible(info.availableTools.count),
@@ -54,7 +54,7 @@ actor RunContext {
             logger.debug(
                 "API-level model request completed",
                 metadata: [
-                    "agent.id": .string(agentId.uuidString),
+                    "agent.id": .string(agentId),
                     "session.id": .string(sessionId.uuidString),
                     "duration": .stringConvertible(info.duration),
                 ])
@@ -80,7 +80,7 @@ actor RunContext {
             logger.debug(
                 "Tool call started",
                 metadata: [
-                    "agent.id": .string(agentId.uuidString),
+                    "agent.id": .string(agentId),
                     "tool.name": .string(info.toolName),
                     "call.index": .stringConvertible(info.callIndex),
                 ])
@@ -99,7 +99,7 @@ actor RunContext {
                 logger.warning(
                     "Tool call completed without matching started event",
                     metadata: [
-                        "agent.id": .string(agentId.uuidString),
+                        "agent.id": .string(agentId),
                         "call.index": .stringConvertible(info.callIndex),
                     ])
                 return
@@ -108,7 +108,7 @@ actor RunContext {
             logger.debug(
                 "Tool call completed",
                 metadata: [
-                    "agent.id": .string(agentId.uuidString),
+                    "agent.id": .string(agentId),
                     "tool.name": .string(info.toolName),
                     "duration": .stringConvertible(info.duration),
                 ])
@@ -132,7 +132,7 @@ actor RunContext {
                 logger.warning(
                     "Tool call failed without matching started event",
                     metadata: [
-                        "agent.id": .string(agentId.uuidString),
+                        "agent.id": .string(agentId),
                         "call.index": .stringConvertible(info.callIndex),
                     ])
                 return
@@ -141,7 +141,7 @@ actor RunContext {
             logger.debug(
                 "Tool call failed",
                 metadata: [
-                    "agent.id": .string(agentId.uuidString),
+                    "agent.id": .string(agentId),
                     "tool.name": .string(info.toolName),
                     "error": .string(info.errorDescription),
                 ])

@@ -44,14 +44,14 @@ public enum AgentCenterEvent: Sendable {
     // MARK: - Transcript Building
 
     case transcriptBuildStarted(
-        agentId: UUID,
+        agentId: String,
         previousRunCount: Int,
         timestamp: Date
     )
 
     case transcriptBuilt(
         transcript: Transcript,
-        agentId: UUID,
+        agentId: String,
         toolCount: Int,
         timestamp: Date
     )
@@ -62,7 +62,7 @@ public enum AgentCenterEvent: Sendable {
         requestId: UUID,
         transcript: Transcript,
         message: String,
-        agentId: UUID,
+        agentId: String,
         modelName: String,
         toolCount: Int,
         timestamp: Date
@@ -71,7 +71,7 @@ public enum AgentCenterEvent: Sendable {
     case modelResponseReceived(
         requestId: UUID,
         content: String,
-        agentId: UUID,
+        agentId: String,
         sessionId: UUID,
         duration: TimeInterval,
         inputTokens: Int?,
@@ -100,7 +100,7 @@ public enum AgentCenterEvent: Sendable {
     // MARK: - Session Management
 
     case sessionCreated(
-        agentId: UUID,
+        agentId: String,
         modelName: String,
         toolCount: Int,
         timestamp: Date
@@ -110,7 +110,7 @@ public enum AgentCenterEvent: Sendable {
 
     case runSaved(
         runId: UUID,
-        agentId: UUID,
+        agentId: String,
         messageCount: Int,
         timestamp: Date
     )

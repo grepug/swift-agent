@@ -7,8 +7,8 @@ import Foundation
 public protocol AgentCenter: Sendable {
     // Agent management
     func register(agent: Agent) async
-    func agent(id: UUID) async -> Agent?
-    func prepareAgent(_ id: UUID) async throws
+    func agent(id: String) async -> Agent?
+    func prepareAgent(_ id: String) async throws
 
     // Agent execution
     func runAgent<T: Codable & Generable>(

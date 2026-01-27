@@ -49,7 +49,7 @@ struct ExampleRunner {
         return doubaoModel
     }
 
-    static func setupAgentCenter() async -> UUID {
+    static func setupAgentCenter() async -> String {
         @Dependency(\.agentCenter) var center
 
         let context7Server = MCPServerConfiguration(
@@ -110,6 +110,7 @@ struct ExampleRunner {
 
         // Create an agent
         let agent = Agent(
+            id: "default-assistant",
             name: "AI Assistant",
             description: "A helpful AI assistant with calculator",
             modelName: "doubao",
@@ -139,7 +140,7 @@ struct ExampleRunner {
     static func getAgent2() async throws -> Agent {
         let config = await makeConfig()
         return Agent(
-            id: UUID(),
+            id: "agent-2",
             name: "xxxx",
             description: "",
             modelName: model(config: config).model,

@@ -8,7 +8,7 @@ import Logging
 private let logger = Logger(label: "LiveAgentCenter")
 
 actor LiveAgentCenter: AgentCenter {
-    private var agents: [UUID: Agent] = [:]
+    private var agents: [String: Agent] = [:]
     private var discoveredMCPServers: Set<String> = []
     private var mcpServerTools: [String: [String]] = [:]  // MCP server name -> tool names
 
@@ -98,7 +98,7 @@ extension LiveAgentCenter {
         let duplicates = Set(agentIDs.filter { id in agentIDs.filter { $0 == id }.count > 1 })
         if !duplicates.isEmpty {
             throw AgentError.invalidConfiguration(
-                "Duplicate agent IDs found in configuration: \(duplicates.map { $0.uuidString }.sorted().joined(separator: ", "))"
+                "Duplicate agent IDs found in configuration: \(duplicates.sorted().joined(separator: ", "))"
             )
         }
     }
@@ -134,7 +134,7 @@ extension LiveAgentCenter {
 
         if !conflicts.isEmpty {
             throw AgentError.invalidConfiguration(
-                "Configuration contains agent IDs that are already registered: \(conflicts.map { $0.uuidString }.sorted().joined(separator: ", ")). Unregister them first or use different IDs."
+                "Configuration contains agent IDs that are already registered: \(conflicts.sorted().joined(separator: ", ")). Unregister them first or use different IDs."
             )
         }
     }
@@ -205,29 +205,29 @@ extension LiveAgentCenter {
 
 extension LiveAgentCenter {
     func register(agent: Agent) async {
-        logger.info("Registering agent", metadata: ["agent.id": .string(agent.id.uuidString), "agent.name": .string(agent.name)])
+        logger.info("Registering agent", metadata: ["agent.id": .string(agent.id), "agent.name": .string(agent.name)])
         agents[agent.id] = agent
-        logger.debug("Agent registered successfully", metadata: ["agent.id": .string(agent.id.uuidString)])
+        logger.debug("Agent registered successfully", metadata: ["agent.id": .string(agent.id)])
     }
 
-    func agent(id: UUID) async -> Agent? {
+    func agent(id: String) async -> Agent? {
         let agent = agents[id]
         if agent != nil {
-            logger.debug("Agent found", metadata: ["agent.id": .string(id.uuidString)])
+            logger.debug("Agent found", metadata: ["agent.id": .string(id)])
         } else {
-            logger.warning("Agent not found", metadata: ["agent.id": .string(id.uuidString)])
+            logger.warning("Agent not found", metadata: ["agent.id": .string(id)])
         }
         return agent
     }
 
-    func prepareAgent(_ id: UUID) async throws {
-        logger.info("Preparing agent", metadata: ["agent.id": .string(id.uuidString)])
+    func prepareAgent(_ id: String) async throws {
+        logger.info("Preparing agent", metadata: ["agent.id": .string(id)])
         guard let agent = agents[id] else {
-            logger.error("Agent not found", metadata: ["agent.id": .string(id.uuidString)])
+            logger.error("Agent not found", metadata: ["agent.id": .string(id)])
             throw AgentError.agentNotFound(id)
         }
         try await discoverMCPServers(agent.mcpServerNames)
-        logger.info("Agent prepared successfully", metadata: ["agent.id": .string(id.uuidString)])
+        logger.info("Agent prepared successfully", metadata: ["agent.id": .string(id)])
     }
 }
 
@@ -241,12 +241,12 @@ extension LiveAgentCenter {
         as type: T.Type,
         loadHistory: Bool = true
     ) async throws -> Run {
-        logger.info("Running agent", metadata: ["agent.id": .string(session.agentId.uuidString), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
+        logger.info("Running agent", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
 
         // Validate agent exists
         let agent = agents[session.agentId]
         guard let agent else {
-            logger.error("Agent not found", metadata: ["agent.id": .string(session.agentId.uuidString)])
+            logger.error("Agent not found", metadata: ["agent.id": .string(session.agentId)])
             throw AgentError.agentNotFound(session.agentId)
         }
 
@@ -280,10 +280,10 @@ extension LiveAgentCenter {
 
             if let string = response.content as? String {
                 // Extract content from response
-                logger.debug("Response received as string", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                logger.debug("Response received as string", metadata: ["agent.id": .string(session.agentId)])
                 content = string.data(using: String.Encoding.utf8)
             } else {
-                logger.debug("Response received as structured type", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                logger.debug("Response received as structured type", metadata: ["agent.id": .string(session.agentId)])
                 content = try JSONEncoder().encode(response.content)
             }
 
@@ -341,12 +341,12 @@ extension LiveAgentCenter {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    agentLogger.info("Starting agent stream", metadata: ["agent.id": .string(session.agentId.uuidString), "session.id": .string(session.sessionId.uuidString)])
+                    agentLogger.info("Starting agent stream", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString)])
 
                     // Validate agent exists
                     let agent = agents[session.agentId]
                     guard let agent else {
-                        agentLogger.error("Agent not found for stream", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                        agentLogger.error("Agent not found for stream", metadata: ["agent.id": .string(session.agentId)])
                         throw AgentError.agentNotFound(session.agentId)
                     }
 
@@ -368,13 +368,13 @@ extension LiveAgentCenter {
                     let response = try await modelSession.respond { Prompt(message) }
 
                     // The response content is already a String
-                    logger.debug("Stream response received", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                    logger.debug("Stream response received", metadata: ["agent.id": .string(session.agentId)])
                     continuation.yield(String(describing: response.content))
 
                     continuation.finish()
-                    logger.info("Agent stream completed successfully", metadata: ["agent.id": .string(session.agentId.uuidString), "session.id": .string(session.sessionId.uuidString)])
+                    logger.info("Agent stream completed successfully", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString)])
                 } catch {
-                    logger.error("Agent stream failed", metadata: ["agent.id": .string(session.agentId.uuidString), "error": .string(String(describing: error))])
+                    logger.error("Agent stream failed", metadata: ["agent.id": .string(session.agentId), "error": .string(String(describing: error))])
                     continuation.finish(throwing: error)
                 }
             }
@@ -539,10 +539,10 @@ extension LiveAgentCenter {
             if let tool = tools[toolName] {
                 result.append(tool)
             } else {
-                logger.warning("Tool not found for agent", metadata: ["agent.id": .string(agent.id.uuidString), "tool.name": .string(toolName)])
+                logger.warning("Tool not found for agent", metadata: ["agent.id": .string(agent.id), "tool.name": .string(toolName)])
             }
         }
-        logger.debug("Retrieved tools for agent", metadata: ["agent.id": .string(agent.id.uuidString), "tool.count": .stringConvertible(result.count)])
+        logger.debug("Retrieved tools for agent", metadata: ["agent.id": .string(agent.id), "tool.count": .stringConvertible(result.count)])
         return result
     }
 
@@ -551,10 +551,10 @@ extension LiveAgentCenter {
         session: AgentSessionContext,
         includeHistory: Bool
     ) async throws -> Transcript {
-        logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id.uuidString), "include.history": .stringConvertible(includeHistory)])
+        logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
         let previousRuns = includeHistory ? try await storage.runs(for: agent) : []
-        logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id.uuidString), "run.count": .stringConvertible(previousRuns.count)])
+        logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
 
         emit(
             .transcriptBuildStarted(
@@ -573,7 +573,7 @@ extension LiveAgentCenter {
         from runs: [Run],
         for agent: Agent
     ) async throws -> Transcript {
-        logger.debug("Building transcript from runs", metadata: ["agent.id": .string(agent.id.uuidString), "run.count": .stringConvertible(runs.count)])
+        logger.debug("Building transcript from runs", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(runs.count)])
         var entries: [Transcript.Entry] = []
 
         // Add instructions
@@ -639,15 +639,15 @@ extension LiveAgentCenter {
         sessionId: UUID,
         with transcript: Transcript
     ) async -> LanguageModelSession {
-        logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName)])
+        logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName)])
         guard let model = models[agent.modelName] else {
-            logger.error("Model not found", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName)])
+            logger.error("Model not found", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName)])
             fatalError("Model '\(agent.modelName)' not registered in AgentCenter")
         }
 
         let sessionTools = await tools(for: agent)
         logger.debug(
-            "Language model session created", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName), "tool.count": .stringConvertible(sessionTools.count)])
+            "Language model session created", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName), "tool.count": .stringConvertible(sessionTools.count)])
 
         emit(
             .sessionCreated(
