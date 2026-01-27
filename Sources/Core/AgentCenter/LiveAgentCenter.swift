@@ -17,7 +17,15 @@ actor LiveAgentCenter: AgentCenter {
 
     private var mcpServerConfigurations: [String: MCPServerConfiguration] = [:]
 
+    @Dependency(\.agentObservers) private var observers
+
     init() {}
+
+    // MARK: - Event Emission
+
+    private func emit(_ event: AgentCenterEvent) {
+        observers.forEach { $0.observe(event) }
+    }
 }
 
 // MARK: - Loading from Configuration
@@ -242,53 +250,86 @@ extension LiveAgentCenter {
             throw AgentError.agentNotFound(session.agentId)
         }
 
-        // Discover MCP servers for this agent
-        try await discoverMCPServers(agent.mcpServerNames)
+        emit(
+            .agentExecutionStarted(
+                agent: agent,
+                session: session,
+                timestamp: Date()
+            ))
 
-        // Load transcript with history
-        let transcript = try await loadTranscript(
-            for: agent,
-            session: session,
-            includeHistory: loadHistory
-        )
+        do {
+            // Discover MCP servers for this agent
+            try await discoverMCPServers(agent.mcpServerNames)
 
-        // Create session with conversation history
-        let modelSession = await createSession(for: agent, with: transcript)
+            // Load transcript with history
+            let transcript = try await loadTranscript(
+                for: agent,
+                session: session,
+                includeHistory: loadHistory
+            )
 
-        // Use AnyLanguageModel's session to handle the conversation
-        logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
-        let response = try await modelSession.respond(to: message, generating: T.self)
-        let content: Data?
+            // Create session with conversation history
+            let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
-        if let string = response.content as? String {
-            // Extract content from response
-            logger.debug("Response received as string", metadata: ["agent.id": .string(session.agentId.uuidString)])
-            content = string.data(using: .utf8)
-        } else {
-            logger.debug("Response received as structured type", metadata: ["agent.id": .string(session.agentId.uuidString)])
-            content = try JSONEncoder().encode(response.content)
+            // Use AnyLanguageModel's session to handle the conversation
+            // Individual API calls will be tracked via handleModelEvent()
+            logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
+            let response = try await modelSession.respond(to: message, generating: T.self)
+
+            let content: Data?
+
+            if let string = response.content as? String {
+                // Extract content from response
+                logger.debug("Response received as string", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                content = string.data(using: String.Encoding.utf8)
+            } else {
+                logger.debug("Response received as structured type", metadata: ["agent.id": .string(session.agentId.uuidString)])
+                content = try JSONEncoder().encode(response.content)
+            }
+
+            // Create messages from the session transcript
+            let messages = extractMessages(from: modelSession.transcript)
+            logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
+
+            // Create run record
+            let run = Run(
+                agentId: session.agentId,
+                sessionId: session.sessionId,
+                userId: session.userId,
+                messages: messages,
+                rawContent: content,
+            )
+
+            // Save to storage
+            @Dependency(\.storage) var storage
+            logger.debug("Saving run to storage", metadata: ["run.id": .string(run.id.uuidString)])
+            try await storage.append(run, for: agent)
+            logger.info("Agent run completed successfully", metadata: ["run.id": .string(run.id.uuidString), "message.count": .stringConvertible(messages.count)])
+
+            emit(
+                .runSaved(
+                    runId: run.id,
+                    agentId: agent.id,
+                    messageCount: messages.count,
+                    timestamp: Date()
+                ))
+
+            emit(
+                .agentExecutionCompleted(
+                    run: run,
+                    timestamp: Date()
+                ))
+
+            return run
+        } catch {
+            emit(
+                .agentExecutionFailed(
+                    session: session,
+                    error: error,
+                    timestamp: Date()
+                ))
+            throw error
         }
-
-        // Create messages from the session transcript
-        let messages = extractMessages(from: modelSession.transcript)
-        logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
-
-        // Create run record
-        let run = Run(
-            agentId: session.agentId,
-            sessionId: session.sessionId,
-            userId: session.userId,
-            messages: messages,
-            rawContent: content,
-        )
-
-        // Save to storage
-        @Dependency(\.storage) var storage
-        logger.debug("Saving run to storage", metadata: ["run.id": .string(run.id.uuidString)])
-        try await storage.append(run, for: agent)
-        logger.info("Agent run completed successfully", metadata: ["run.id": .string(run.id.uuidString), "message.count": .stringConvertible(messages.count)])
-
-        return run
     }
 
     func streamAgent(
@@ -320,7 +361,7 @@ extension LiveAgentCenter {
                     )
 
                     // Create session with history
-                    let modelSession = await createSession(for: agent, with: transcript)
+                    let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
                     // Use respond() which handles tool calls automatically
                     logger.debug("Sending stream message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
@@ -425,20 +466,36 @@ extension LiveAgentCenter {
 
         logger.info("Discovering MCP servers", metadata: ["mcp.servers": .stringConvertible(undiscoveredServers.joined(separator: ", "))])
 
+        emit(
+            .mcpServerDiscoveryStarted(
+                serverNames: undiscoveredServers,
+                timestamp: Date()
+            ))
+
         try await withThrowingTaskGroup(of: (String, [any Tool]).self) { group in
             for serverName in undiscoveredServers {
                 group.addTask {
-                    guard let mcpConfig = await self.mcpServerConfiguration(named: serverName) else {
-                        logger.error("MCP server configuration not found", metadata: ["mcp.server": .string(serverName)])
-                        throw AgentError.invalidConfiguration("MCP server configuration '\(serverName)' not found")
+                    do {
+                        guard let mcpConfig = await self.mcpServerConfiguration(named: serverName) else {
+                            logger.error("MCP server configuration not found", metadata: ["mcp.server": .string(serverName)])
+                            throw AgentError.invalidConfiguration("MCP server configuration '\(serverName)' not found")
+                        }
+                        logger.debug("Connecting to MCP server", metadata: ["mcp.server": .string(serverName)])
+                        let server = try await MCPServerCenter.shared.server(for: mcpConfig)
+                        let tools = try await server.discover()
+                        logger.info(
+                            "Tools discovered from MCP server",
+                            metadata: ["mcp.server": .string(serverName), "tool.count": .stringConvertible(tools.count), "tools": .stringConvertible(tools.map { $0.name }.joined(separator: ", "))])
+                        return (serverName, tools)
+                    } catch {
+                        await self.emit(
+                            .mcpServerDiscoveryFailed(
+                                serverName: serverName,
+                                error: error,
+                                timestamp: Date()
+                            ))
+                        throw error
                     }
-                    logger.debug("Connecting to MCP server", metadata: ["mcp.server": .string(serverName)])
-                    let server = try await MCPServerCenter.shared.server(for: mcpConfig)
-                    let tools = try await server.discover()
-                    logger.info(
-                        "Tools discovered from MCP server",
-                        metadata: ["mcp.server": .string(serverName), "tool.count": .stringConvertible(tools.count), "tools": .stringConvertible(tools.map { $0.name }.joined(separator: ", "))])
-                    return (serverName, tools)
                 }
             }
 
@@ -452,6 +509,13 @@ extension LiveAgentCenter {
 
                 discoveredMCPServers.insert(serverName)
                 logger.debug("MCP server tools registered", metadata: ["mcp.server": .string(serverName), "tool.count": .stringConvertible(toolNames.count)])
+
+                emit(
+                    .mcpServerDiscovered(
+                        serverName: serverName,
+                        toolNames: toolNames,
+                        timestamp: Date()
+                    ))
             }
         }
     }
@@ -491,6 +555,14 @@ extension LiveAgentCenter {
         @Dependency(\.storage) var storage
         let previousRuns = includeHistory ? try await storage.runs(for: agent) : []
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id.uuidString), "run.count": .stringConvertible(previousRuns.count)])
+
+        emit(
+            .transcriptBuildStarted(
+                agentId: agent.id,
+                previousRunCount: previousRuns.count,
+                timestamp: Date()
+            ))
+
         return try await buildTranscript(
             from: previousRuns,
             for: agent
@@ -549,11 +621,22 @@ extension LiveAgentCenter {
             }
         }
 
-        return Transcript(entries: entries)
+        let transcript = Transcript(entries: entries)
+
+        emit(
+            .transcriptBuilt(
+                transcript: transcript,
+                agentId: agent.id,
+                toolCount: toolDefs.count,
+                timestamp: Date()
+            ))
+
+        return transcript
     }
 
     private func createSession(
         for agent: Agent,
+        sessionId: UUID,
         with transcript: Transcript
     ) async -> LanguageModelSession {
         logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName)])
@@ -566,11 +649,38 @@ extension LiveAgentCenter {
         logger.debug(
             "Language model session created", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName), "tool.count": .stringConvertible(sessionTools.count)])
 
-        return LanguageModelSession(
+        emit(
+            .sessionCreated(
+                agentId: agent.id,
+                modelName: agent.modelName,
+                toolCount: sessionTools.count,
+                timestamp: Date()
+            ))
+
+        let session = LanguageModelSession(
             model: model,
             tools: sessionTools,
             transcript: transcript
         )
+
+        // Create context for this agent run
+        let context = RunContext(
+            agentId: agent.id,
+            sessionId: sessionId,
+            emitEvent: { [weak self] event in
+                guard let self = self else { return }
+                Task { await self.emit(event) }
+            }
+        )
+
+        // Set up event handler to use the context
+        session.onEvent = { event in
+            Task {
+                await context.handleModelEvent(event)
+            }
+        }
+
+        return session
     }
 
     private func extractMessages(from transcript: Transcript) -> [Message] {
