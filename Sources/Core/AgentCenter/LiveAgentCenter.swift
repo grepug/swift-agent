@@ -18,6 +18,59 @@ actor LiveAgentCenter: AgentCenter {
     private var mcpServerConfigurations: [String: MCPServerConfiguration] = [:]
 
     init() {}
+
+    func load(configuration: AgentConfiguration) async throws {
+        logger.info(
+            "Loading agent configuration",
+            metadata: [
+                "model.count": .stringConvertible(configuration.models.count),
+                "agent.count": .stringConvertible(configuration.agents.count),
+                "mcp.count": .stringConvertible(configuration.mcpServers.count),
+            ])
+
+        // Register models first
+        for modelConfig in configuration.models {
+            let openAIModel = OpenAILanguageModel(
+                baseURL: modelConfig.baseURL,
+                apiKey: modelConfig.apiKey,
+                model: modelConfig.id,
+            )
+            await register(model: openAIModel, named: modelConfig.name)
+        }
+
+        // Register MCP servers
+        for mcpConfig in configuration.mcpServers {
+            await register(mcpServerConfiguration: mcpConfig)
+        }
+
+        // Validate and register agents
+        for agent in configuration.agents {
+            // Validate model reference
+            if await model(named: agent.modelName) == nil {
+                throw AgentError.invalidConfiguration(
+                    "Agent '\(agent.name)' references unknown model '\(agent.modelName)'. Ensure it's defined in the 'models' array or registered beforehand."
+                )
+            }
+
+            // Validate tool references (only checking explicitly listed tools, not MCP tools)
+            for toolName in agent.toolNames {
+                if await tool(named: toolName) == nil {
+                    throw AgentError.invalidConfiguration(
+                        "Agent '\(agent.name)' references unknown tool '\(toolName)'. Register the tool before loading the config."
+                    )
+                }
+            }
+
+            await register(agent: agent)
+        }
+
+        logger.info(
+            "Agent configuration loaded successfully",
+            metadata: [
+                "model.count": .stringConvertible(configuration.models.count),
+                "agent.count": .stringConvertible(configuration.agents.count),
+            ])
+    }
 }
 
 // MARK: - Agent Management
