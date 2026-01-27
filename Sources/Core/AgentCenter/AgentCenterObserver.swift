@@ -530,6 +530,23 @@ public final class FileDebugObserver: AgentCenterObserver {
         }.joined(separator: "\n")
     }
 
+    private func sanitizeFilenameComponent(_ input: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let mappedCharacters: [Character] = input.unicodeScalars.map { scalar in
+            if allowed.contains(scalar) {
+                return Character(scalar)
+            } else {
+                return "_"
+            }
+        }
+        var sanitized = String(mappedCharacters)
+        sanitized = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "._"))
+        if sanitized.isEmpty {
+            sanitized = "tool"
+        }
+        return sanitized
+    }
+
     private func writeToolCallFile(
         runDir: URL,
         runId: UUID,
@@ -545,7 +562,8 @@ public final class FileDebugObserver: AgentCenterObserver {
             return num
         }
 
-        let filename = String(format: "%02d-tool-%@.md", fileNum, toolData.toolName)
+        let safeToolName = sanitizeFilenameComponent(toolData.toolName)
+        let filename = String(format: "%02d-tool-%@.md", fileNum, safeToolName)
         let fileURL = runDir.appendingPathComponent(filename)
 
         let formatter = ISO8601DateFormatter()
@@ -644,7 +662,8 @@ public final class FileDebugObserver: AgentCenterObserver {
                 if let inTokens = inputTokens { totalInputTokens += inTokens }
                 if let outTokens = outputTokens { totalOutputTokens += outTokens }
             } else {
-                filename = String(format: "%02d-tool-%@.md", fileNumber, toolName)
+                let safeToolName = sanitizeFilenameComponent(toolName)
+                filename = String(format: "%02d-tool-%@.md", fileNumber, safeToolName)
                 toolCallCount += 1
             }
 
