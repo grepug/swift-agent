@@ -90,6 +90,12 @@ public final class FileDebugObserver: AgentCenterObserver {
         var sessionToolCalls: [UUID: [UUID: ToolCallData]] = [:]  // sessionId -> executionId -> data
         var sessionAPIModelCalls: [UUID: [UUID: APIModelCallData]] = [:]  // sessionId -> eventId -> data
         var currentRunSession: UUID?  // The session that has an active run in progress
+        
+        // Track run summary data
+        var sessionUserInput: [UUID: String] = [:]  // sessionId -> initial user message
+        var sessionFinalResponse: [UUID: String] = [:]  // sessionId -> final model response
+        var sessionStartTime: [UUID: Date] = [:]  // sessionId -> run start time
+        var sessionModelName: [UUID: String] = [:]  // sessionId -> model name/ID
     }
 
     // Track in-progress model calls
@@ -158,10 +164,11 @@ public final class FileDebugObserver: AgentCenterObserver {
         writeEventLog(event)
 
         switch event {
-        case .agentExecutionStarted(_, let session, _):
+        case .agentExecutionStarted(_, let session, let timestamp):
             // Track session and prepare for new run
             store.withValue { store in
                 store.currentRunSession = session.sessionId
+                store.sessionStartTime[session.sessionId] = timestamp
                 if store.sessionDirectories[session.sessionId] == nil {
                     store.sessionCounter += 1
                     let sessionDirName = String(format: "%02d-%@", store.sessionCounter, session.sessionId.uuidString)
@@ -178,7 +185,7 @@ public final class FileDebugObserver: AgentCenterObserver {
                 store.sessionAPIModelCalls[session.sessionId] = [:]
             }
 
-        case .modelRequestSending(let requestId, let transcript, _, _, _, let toolCount, let timestamp):
+        case .modelRequestSending(let requestId, let transcript, _, _, let modelName, let toolCount, let timestamp):
             // This event comes from handleModelEvent (requestStarted) - represents individual API calls
             // Store as API-level call to write separate files for each actual model API request
             store.withValue { store in
@@ -189,6 +196,22 @@ public final class FileDebugObserver: AgentCenterObserver {
 
                 // Convert Transcript to array of entries for storage
                 let entries = (0..<transcript.count).compactMap { transcript[$0] }
+                
+                // Capture model name (first API call)
+                if store.sessionModelName[sessionId] == nil {
+                    store.sessionModelName[sessionId] = modelName
+                }
+                
+                // Capture user input from first API call (last entry should be the user prompt)
+                if store.sessionUserInput[sessionId] == nil {
+                    if let lastEntry = entries.last, case .prompt(let prompt) = lastEntry {
+                        let userText = prompt.segments.compactMap { segment in
+                            if case .text(let text) = segment { return text.content }
+                            return nil
+                        }.joined(separator: "\n")
+                        store.sessionUserInput[sessionId] = userText
+                    }
+                }
 
                 store.sessionAPIModelCalls[sessionId]?[requestId] = APIModelCallData(
                     eventId: requestId,
@@ -214,6 +237,11 @@ public final class FileDebugObserver: AgentCenterObserver {
                     callData.inputTokens = inputTokens
                     callData.outputTokens = outputTokens
                     store.sessionAPIModelCalls[sessionId]?[requestId] = callData
+                    
+                    // Update final response (last non-empty response wins)
+                    if !content.isEmpty {
+                        store.sessionFinalResponse[sessionId] = content
+                    }
                 }
             }
 
@@ -326,10 +354,17 @@ public final class FileDebugObserver: AgentCenterObserver {
                 }
             }
 
+            // Write summary.json
+            writeSummaryFile(runDir: runDir, runId: run.id, sessionId: run.sessionId, endTime: event.timestamp)
+
             // Clean up this session's calls (not all sessions)
             store.withValue { store in
                 store.sessionAPIModelCalls[run.sessionId] = nil
                 store.sessionToolCalls[run.sessionId] = nil
+                store.sessionUserInput[run.sessionId] = nil
+                store.sessionFinalResponse[run.sessionId] = nil
+                store.sessionStartTime[run.sessionId] = nil
+                store.sessionModelName[run.sessionId] = nil
                 store.currentRunSession = nil
             }
 
@@ -640,5 +675,132 @@ public final class FileDebugObserver: AgentCenterObserver {
         content += "\n```\n"
 
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+    
+    private func writeSummaryFile(runDir: URL, runId: UUID, sessionId: UUID, endTime: Date) {
+        let summaryURL = runDir.appendingPathComponent("summary.json")
+        
+        let (userInput, finalResponse, startTime, modelName, eventSummaries) = store.withValue { store -> (String, String, Date, String, [(String, String, Date, TimeInterval?, Int?, Int?, Bool?)]) in
+            let userInput = store.sessionUserInput[sessionId] ?? ""
+            let finalResponse = store.sessionFinalResponse[sessionId] ?? ""
+            let startTime = store.sessionStartTime[sessionId] ?? Date()
+            let modelName = store.sessionModelName[sessionId] ?? "unknown"
+            
+            // Build event summaries from API calls and tool calls
+            var events: [(String, String, Date, TimeInterval?, Int?, Int?, Bool?)] = []
+            
+            // Add API calls
+            if let apiCalls = store.sessionAPIModelCalls[sessionId] {
+                for callData in apiCalls.values {
+                    // Find the file number by matching with written files
+                    events.append((
+                        "apiCall",
+                        "", // Will determine filename later
+                        callData.startTime,
+                        callData.duration,
+                        callData.inputTokens,
+                        callData.outputTokens,
+                        nil
+                    ))
+                }
+            }
+            
+            // Add tool calls
+            if let toolCalls = store.sessionToolCalls[sessionId] {
+                for toolData in toolCalls.values {
+                    events.append((
+                        "toolCall",
+                        toolData.toolName,
+                        toolData.startTime,
+                        toolData.duration,
+                        nil,
+                        nil,
+                        toolData.success
+                    ))
+                }
+            }
+            
+            return (userInput, finalResponse, startTime, modelName, events)
+        }
+        
+        // Sort events by timestamp
+        let sortedEvents = eventSummaries.sorted { $0.2 < $1.2 }
+        
+        // Calculate totals
+        var totalInputTokens = 0
+        var totalOutputTokens = 0
+        var totalDuration: TimeInterval = 0
+        var apiCallCount = 0
+        var toolCallCount = 0
+        
+        // Build events JSON array and calculate totals
+        var eventsJSON: [[String: Any]] = []
+        var fileNumber = 1
+        
+        for event in sortedEvents {
+            let (type, toolName, timestamp, duration, inputTokens, outputTokens, success) = event
+            
+            let filename: String
+            if type == "apiCall" {
+                filename = String(format: "%02d-api-call.md", fileNumber)
+                apiCallCount += 1
+                if let inTokens = inputTokens { totalInputTokens += inTokens }
+                if let outTokens = outputTokens { totalOutputTokens += outTokens }
+            } else {
+                filename = String(format: "%02d-tool-%@.md", fileNumber, toolName)
+                toolCallCount += 1
+            }
+            
+            if let dur = duration { totalDuration += dur }
+            
+            var eventDict: [String: Any] = [
+                "type": type,
+                "file": filename,
+                "timestamp": ISO8601DateFormatter().string(from: timestamp)
+            ]
+            
+            if type == "apiCall" {
+                if let inTokens = inputTokens { eventDict["inputTokens"] = inTokens }
+                if let outTokens = outputTokens { eventDict["outputTokens"] = outTokens }
+            } else {
+                eventDict["name"] = toolName
+                if let s = success { eventDict["success"] = s }
+            }
+            
+            if let dur = duration { eventDict["duration"] = Double(round(dur * 1000) / 1000) }
+            
+            eventsJSON.append(eventDict)
+            fileNumber += 1
+        }
+        
+        // Calculate actual run duration from first to last event
+        let runDuration: TimeInterval
+        if let firstTimestamp = sortedEvents.first?.2,
+           let lastTimestamp = sortedEvents.last?.2 {
+            runDuration = lastTimestamp.timeIntervalSince(firstTimestamp) + (sortedEvents.last?.3 ?? 0)
+        } else {
+            runDuration = 0
+        }
+        
+        // Build summary JSON
+        let summary: [String: Any] = [
+            "userInput": userInput,
+            "finalResponse": finalResponse,
+            "modelName": modelName,
+            "totalInputTokens": totalInputTokens,
+            "totalOutputTokens": totalOutputTokens,
+            "totalTokens": totalInputTokens + totalOutputTokens,
+            "totalDuration": Double(round(runDuration * 1000) / 1000),
+            "apiCallCount": apiCallCount,
+            "toolCallCount": toolCallCount,
+            "startTime": ISO8601DateFormatter().string(from: startTime),
+            "endTime": ISO8601DateFormatter().string(from: endTime),
+            "events": eventsJSON
+        ]
+        
+        // Write JSON
+        if let jsonData = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) {
+            try? jsonData.write(to: summaryURL)
+        }
     }
 }
