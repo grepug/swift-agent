@@ -22,9 +22,6 @@ actor LiveAgentCenter: AgentCenter {
     // Track tool execution IDs by callIndex (for correlating started/completed events)
     private var toolExecutionIds: [Int: UUID] = [:]
 
-    // Track current session for capturing model events
-    private var currentRunSession: UUID?
-
     init() {}
 
     // MARK: - Event Emission
@@ -76,10 +73,6 @@ extension LiveAgentCenter {
     ) async throws -> Run {
         logger.info("Running agent", metadata: ["agent.id": .string(session.agentId.uuidString), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
 
-        // Track current session for model event handling
-        currentRunSession = session.sessionId
-        defer { currentRunSession = nil }
-
         // Validate agent exists
         let agent = agents[session.agentId]
         guard let agent else {
@@ -106,7 +99,7 @@ extension LiveAgentCenter {
             )
 
             // Create session with conversation history
-            let modelSession = await createSession(for: agent, with: transcript)
+            let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
             // Use AnyLanguageModel's session to handle the conversation
             // Individual API calls will be tracked via handleModelEvent()
@@ -118,7 +111,7 @@ extension LiveAgentCenter {
             if let string = response.content as? String {
                 // Extract content from response
                 logger.debug("Response received as string", metadata: ["agent.id": .string(session.agentId.uuidString)])
-                content = string.data(using: .utf8)
+                content = string.data(using: String.Encoding.utf8)
             } else {
                 logger.debug("Response received as structured type", metadata: ["agent.id": .string(session.agentId.uuidString)])
                 content = try JSONEncoder().encode(response.content)
@@ -198,7 +191,7 @@ extension LiveAgentCenter {
                     )
 
                     // Create session with history
-                    let modelSession = await createSession(for: agent, with: transcript)
+                    let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
                     // Use respond() which handles tool calls automatically
                     logger.debug("Sending stream message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
@@ -473,6 +466,7 @@ extension LiveAgentCenter {
 
     private func createSession(
         for agent: Agent,
+        sessionId: UUID,
         with transcript: Transcript
     ) async -> LanguageModelSession {
         logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id.uuidString), "model.name": .string(agent.modelName)])
@@ -499,24 +493,25 @@ extension LiveAgentCenter {
             transcript: transcript
         )
 
+        // Capture agent and session IDs for event handling
+        let agentId = agent.id
+
         // Set up event handler to track tool calls
-        session.onEvent = { [weak self] event in
+        session.onEvent = { [weak self, sessionId] event in
             guard let self = self else { return }
 
             Task {
-                await self.handleModelEvent(event)
+                await self.handleModelEvent(event, agentId: agentId, sessionId: sessionId)
             }
         }
 
         return session
     }
 
-    private func handleModelEvent(_ event: ModelEvent) async {
+    private func handleModelEvent(_ event: ModelEvent, agentId: UUID, sessionId: UUID) {
         switch event.details {
         case .requestStarted(let info):
             // Track the start of an actual API request with full context
-            guard currentRunSession != nil else { return }
-
             logger.debug(
                 "API-level model request started",
                 metadata: [
@@ -530,7 +525,7 @@ extension LiveAgentCenter {
                     requestId: event.id,
                     transcript: Transcript(entries: info.transcriptEntries),
                     message: info.promptText,
-                    agentId: UUID(),  // We don't have agent context here
+                    agentId: agentId,
                     modelName: event.modelIdentifier,
                     toolCount: info.availableTools.count,
                     timestamp: event.timestamp
@@ -538,14 +533,12 @@ extension LiveAgentCenter {
 
         case .requestCompleted(let info):
             // This fires for EACH actual API call to the model
-            guard let sessionId = currentRunSession else { return }
-
             // Emit response event for this individual API call
             emit(
                 .modelResponseReceived(
                     requestId: event.id,
                     content: info.content,
-                    agentId: UUID(),  // We don't have agent context here
+                    agentId: agentId,
                     sessionId: sessionId,
                     duration: info.duration,
                     inputTokens: info.tokenUsage?.promptTokens,

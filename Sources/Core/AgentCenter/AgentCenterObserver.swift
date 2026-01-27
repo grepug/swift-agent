@@ -90,7 +90,7 @@ public final class FileDebugObserver: AgentCenterObserver {
         var sessionToolCalls: [UUID: [UUID: ToolCallData]] = [:]  // sessionId -> executionId -> data
         var sessionAPIModelCalls: [UUID: [UUID: APIModelCallData]] = [:]  // sessionId -> eventId -> data
         var currentRunSession: UUID?  // The session that has an active run in progress
-        
+
         // Track run summary data
         var sessionUserInput: [UUID: String] = [:]  // sessionId -> initial user message
         var sessionFinalResponse: [UUID: String] = [:]  // sessionId -> final model response
@@ -196,12 +196,12 @@ public final class FileDebugObserver: AgentCenterObserver {
 
                 // Convert Transcript to array of entries for storage
                 let entries = (0..<transcript.count).compactMap { transcript[$0] }
-                
+
                 // Capture model name (first API call)
                 if store.sessionModelName[sessionId] == nil {
                     store.sessionModelName[sessionId] = modelName
                 }
-                
+
                 // Capture user input from first API call (last entry should be the user prompt)
                 if store.sessionUserInput[sessionId] == nil {
                     if let lastEntry = entries.last, case .prompt(let prompt) = lastEntry {
@@ -237,7 +237,7 @@ public final class FileDebugObserver: AgentCenterObserver {
                     callData.inputTokens = inputTokens
                     callData.outputTokens = outputTokens
                     store.sessionAPIModelCalls[sessionId]?[requestId] = callData
-                    
+
                     // Update final response (last non-empty response wins)
                     if !content.isEmpty {
                         store.sessionFinalResponse[sessionId] = content
@@ -487,11 +487,6 @@ public final class FileDebugObserver: AgentCenterObserver {
                     content += "```\n\(toolOutput)\n```\n"
                 }
                 content += "\n"
-
-            default:
-                // Handle unknown entry types by showing their description
-                content += "[Message \(msgNum): unknown type]\n\n"
-                content += "\(entry)\n\n"
             }
         }
 
@@ -503,106 +498,6 @@ public final class FileDebugObserver: AgentCenterObserver {
         } else {
             content += "\(response)\n"
         }
-
-        try? content.write(to: fileURL, atomically: true, encoding: .utf8)
-    }
-
-    private func writeModelCallFile(
-        runDir: URL,
-        runId: UUID,
-        callData: ModelCallData,
-        response: String,
-        duration: TimeInterval,
-        inputTokens: Int?,
-        outputTokens: Int?,
-        timestamp: Date
-    ) {
-        let fileNum = store.withValue { store in
-            let num = (store.fileCounters[runId] ?? 0) + 1
-            store.fileCounters[runId] = num
-            return num
-        }
-
-        let filename = String(format: "%02d-model-call.txt", fileNum)
-        let fileURL = runDir.appendingPathComponent(filename)
-
-        let formatter = ISO8601DateFormatter()
-
-        var content = ""
-        content += "═══════════════════════════════════════════════════════════════\n"
-        content += "MODEL CALL #\(fileNum)\n"
-        content += "═══════════════════════════════════════════════════════════════\n"
-        content += "Timestamp: \(formatter.string(from: callData.startTime)) → \(formatter.string(from: timestamp))\n"
-        content += "Duration: \(String(format: "%.3f", duration))s\n"
-        content += "Model: \(callData.modelName)\n"
-        content += "\n"
-
-        content += "Metrics:\n"
-        if let inTokens = inputTokens {
-            content += "  Input Tokens: \(inTokens)\n"
-        }
-        if let outTokens = outputTokens {
-            content += "  Output Tokens: \(outTokens)\n"
-        }
-        if let inTokens = inputTokens, let outTokens = outputTokens {
-            content += "  Total: \(inTokens + outTokens) tokens\n"
-        }
-        content += "\n"
-
-        content += "───────────────────────────────────────────────────────────────\n"
-        content += "REQUEST\n"
-        content += "───────────────────────────────────────────────────────────────\n"
-        content += "\n"
-
-        // Write transcript messages (conversation history)
-        var msgNum = 0
-        for entry in callData.transcript {
-            msgNum += 1
-            switch entry {
-            case .instructions(let inst):
-                content += "[Message \(msgNum): system]\n\n"
-                content += extractTextFromInstructions(inst)
-                content += "\n"
-                if !inst.toolDefinitions.isEmpty {
-                    content += "\n[Available Tools: \(inst.toolDefinitions.count)]\n"
-                    for (idx, tool) in inst.toolDefinitions.enumerated() {
-                        content += "  \(idx + 1). \(tool.name)\n"
-                        let desc = tool.description
-                        if !desc.isEmpty {
-                            content += "     \(desc)\n"
-                        }
-                    }
-                }
-                content += "\n"
-
-            case .prompt(let prompt):
-                content += "[Message \(msgNum): user]\n\n"
-                content += extractTextFromPrompt(prompt)
-                content += "\n\n"
-
-            case .response(let resp):
-                content += "[Message \(msgNum): assistant]\n\n"
-                content += extractTextFromResponse(resp)
-                content += "\n\n"
-
-            default:
-                break
-            }
-        }
-
-        // Add the current user message being sent
-        msgNum += 1
-        content += "[Message \(msgNum): user]\n\n"
-        content += callData.message
-        content += "\n\n"
-
-        content += "───────────────────────────────────────────────────────────────\n"
-        content += "RESPONSE\n"
-        content += "───────────────────────────────────────────────────────────────\n"
-        content += "Received: \(formatter.string(from: timestamp))\n"
-        content += "\n"
-        content += response
-        content += "\n"
 
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
@@ -676,70 +571,72 @@ public final class FileDebugObserver: AgentCenterObserver {
 
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
-    
+
     private func writeSummaryFile(runDir: URL, runId: UUID, sessionId: UUID, endTime: Date) {
         let summaryURL = runDir.appendingPathComponent("summary.json")
-        
+
         let (userInput, finalResponse, startTime, modelName, eventSummaries) = store.withValue { store -> (String, String, Date, String, [(String, String, Date, TimeInterval?, Int?, Int?, Bool?)]) in
             let userInput = store.sessionUserInput[sessionId] ?? ""
             let finalResponse = store.sessionFinalResponse[sessionId] ?? ""
             let startTime = store.sessionStartTime[sessionId] ?? Date()
             let modelName = store.sessionModelName[sessionId] ?? "unknown"
-            
+
             // Build event summaries from API calls and tool calls
             var events: [(String, String, Date, TimeInterval?, Int?, Int?, Bool?)] = []
-            
+
             // Add API calls
             if let apiCalls = store.sessionAPIModelCalls[sessionId] {
                 for callData in apiCalls.values {
                     // Find the file number by matching with written files
-                    events.append((
-                        "apiCall",
-                        "", // Will determine filename later
-                        callData.startTime,
-                        callData.duration,
-                        callData.inputTokens,
-                        callData.outputTokens,
-                        nil
-                    ))
+                    events.append(
+                        (
+                            "apiCall",
+                            "",  // Will determine filename later
+                            callData.startTime,
+                            callData.duration,
+                            callData.inputTokens,
+                            callData.outputTokens,
+                            nil
+                        ))
                 }
             }
-            
+
             // Add tool calls
             if let toolCalls = store.sessionToolCalls[sessionId] {
                 for toolData in toolCalls.values {
-                    events.append((
-                        "toolCall",
-                        toolData.toolName,
-                        toolData.startTime,
-                        toolData.duration,
-                        nil,
-                        nil,
-                        toolData.success
-                    ))
+                    events.append(
+                        (
+                            "toolCall",
+                            toolData.toolName,
+                            toolData.startTime,
+                            toolData.duration,
+                            nil,
+                            nil,
+                            toolData.success
+                        ))
                 }
             }
-            
+
             return (userInput, finalResponse, startTime, modelName, events)
         }
-        
+
         // Sort events by timestamp
         let sortedEvents = eventSummaries.sorted { $0.2 < $1.2 }
-        
+
         // Calculate totals
         var totalInputTokens = 0
         var totalOutputTokens = 0
         var totalDuration: TimeInterval = 0
         var apiCallCount = 0
         var toolCallCount = 0
-        
+
         // Build events JSON array and calculate totals
         var eventsJSON: [[String: Any]] = []
         var fileNumber = 1
-        
+
         for event in sortedEvents {
             let (type, toolName, timestamp, duration, inputTokens, outputTokens, success) = event
-            
+
             let filename: String
             if type == "apiCall" {
                 filename = String(format: "%02d-api-call.md", fileNumber)
@@ -750,15 +647,15 @@ public final class FileDebugObserver: AgentCenterObserver {
                 filename = String(format: "%02d-tool-%@.md", fileNumber, toolName)
                 toolCallCount += 1
             }
-            
+
             if let dur = duration { totalDuration += dur }
-            
+
             var eventDict: [String: Any] = [
                 "type": type,
                 "file": filename,
-                "timestamp": ISO8601DateFormatter().string(from: timestamp)
+                "timestamp": ISO8601DateFormatter().string(from: timestamp),
             ]
-            
+
             if type == "apiCall" {
                 if let inTokens = inputTokens { eventDict["inputTokens"] = inTokens }
                 if let outTokens = outputTokens { eventDict["outputTokens"] = outTokens }
@@ -766,22 +663,23 @@ public final class FileDebugObserver: AgentCenterObserver {
                 eventDict["name"] = toolName
                 if let s = success { eventDict["success"] = s }
             }
-            
+
             if let dur = duration { eventDict["duration"] = Double(round(dur * 1000) / 1000) }
-            
+
             eventsJSON.append(eventDict)
             fileNumber += 1
         }
-        
+
         // Calculate actual run duration from first to last event
         let runDuration: TimeInterval
         if let firstTimestamp = sortedEvents.first?.2,
-           let lastTimestamp = sortedEvents.last?.2 {
+            let lastTimestamp = sortedEvents.last?.2
+        {
             runDuration = lastTimestamp.timeIntervalSince(firstTimestamp) + (sortedEvents.last?.3 ?? 0)
         } else {
             runDuration = 0
         }
-        
+
         // Build summary JSON
         let summary: [String: Any] = [
             "userInput": userInput,
@@ -795,9 +693,9 @@ public final class FileDebugObserver: AgentCenterObserver {
             "toolCallCount": toolCallCount,
             "startTime": ISO8601DateFormatter().string(from: startTime),
             "endTime": ISO8601DateFormatter().string(from: endTime),
-            "events": eventsJSON
+            "events": eventsJSON,
         ]
-        
+
         // Write JSON
         if let jsonData = try? JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys]) {
             try? jsonData.write(to: summaryURL)
