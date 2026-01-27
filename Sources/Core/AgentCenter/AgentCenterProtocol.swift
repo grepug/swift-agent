@@ -39,7 +39,7 @@ public protocol AgentCenter: Sendable {
 
     init()
 
-    /// Loads agents, tools, models, and MCP servers from a configuration object.
+    /// Loads models, agents, and MCP servers from a configuration object.
     ///
     /// Models defined in the configuration will be automatically registered as OpenAI-compatible
     /// language models. Native Swift tools must still be registered programmatically before
@@ -79,7 +79,7 @@ public protocol AgentCenter: Sendable {
     /// try await agentCenter.load(configuration: config)
     /// ```
     ///
-    /// - Parameter configuration: The configuration containing models, agents, tools, and MCP servers
+    /// - Parameter configuration: The configuration containing models, agents, and MCP servers
     /// - Throws: `AgentError.invalidConfiguration` if validation fails
     func load(configuration: AgentConfiguration) async throws
 }

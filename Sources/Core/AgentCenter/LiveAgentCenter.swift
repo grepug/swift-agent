@@ -28,25 +28,47 @@ actor LiveAgentCenter: AgentCenter {
                 "mcp.count": .stringConvertible(configuration.mcpServers.count),
             ])
 
-        // Register models first
-        for modelConfig in configuration.models {
-            let openAIModel = OpenAILanguageModel(
-                baseURL: modelConfig.baseURL,
-                apiKey: modelConfig.apiKey,
-                model: modelConfig.id,
+        // Step 1: Validate for duplicates
+
+        // Check for duplicate model names
+        let modelNames = configuration.models.map { $0.name }
+        let duplicateModels = Set(modelNames.filter { name in modelNames.filter { $0 == name }.count > 1 })
+        if !duplicateModels.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Duplicate model names found: \(duplicateModels.joined(separator: ", "))"
             )
-            await register(model: openAIModel, named: modelConfig.name)
         }
 
-        // Register MCP servers
-        for mcpConfig in configuration.mcpServers {
-            await register(mcpServerConfiguration: mcpConfig)
+        // Check for duplicate MCP server names
+        let mcpServerNames = configuration.mcpServers.map { $0.name }
+        let duplicateMCPServers = Set(mcpServerNames.filter { name in mcpServerNames.filter { $0 == name }.count > 1 })
+        if !duplicateMCPServers.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Duplicate MCP server names found: \(duplicateMCPServers.joined(separator: ", "))"
+            )
         }
 
-        // Validate and register agents
+        // Check for duplicate agent IDs
+        let agentIDs = configuration.agents.map { $0.id }
+        let duplicateAgentIDs = Set(agentIDs.filter { id in agentIDs.filter { $0 == id }.count > 1 })
+        if !duplicateAgentIDs.isEmpty {
+            throw AgentError.invalidConfiguration(
+                "Duplicate agent IDs found: \(duplicateAgentIDs.map { $0.uuidString }.joined(separator: ", "))"
+            )
+        }
+
+        // Step 2: Validate all agent references (before registering anything)
+
+        // Collect all model names that will be available (existing + new from config)
+        let availableModelNames = Set(modelNames + models.keys)
+
+        // Collect all MCP server names that will be available (existing + new from config)
+        let availableMCPServerNames = Set(mcpServerNames + mcpServerConfigurations.keys)
+
+        // Validate each agent's references
         for agent in configuration.agents {
             // Validate model reference
-            if await model(named: agent.modelName) == nil {
+            if !availableModelNames.contains(agent.modelName) {
                 throw AgentError.invalidConfiguration(
                     "Agent '\(agent.name)' references unknown model '\(agent.modelName)'. Ensure it's defined in the 'models' array or registered beforehand."
                 )
@@ -63,13 +85,33 @@ actor LiveAgentCenter: AgentCenter {
 
             // Validate MCP server references
             for mcpServerName in agent.mcpServerNames {
-                if await mcpServerConfiguration(named: mcpServerName) == nil {
+                if !availableMCPServerNames.contains(mcpServerName) {
                     throw AgentError.invalidConfiguration(
                         "Agent '\(agent.name)' references unknown MCP server '\(mcpServerName)'. Ensure it's defined in the 'mcpServers' array."
                     )
                 }
             }
+        }
 
+        // Step 3: All validations passed - now register everything
+
+        // Register models
+        for modelConfig in configuration.models {
+            let openAIModel = OpenAILanguageModel(
+                baseURL: modelConfig.baseURL,
+                apiKey: modelConfig.apiKey,
+                model: modelConfig.id
+            )
+            await register(model: openAIModel, named: modelConfig.name)
+        }
+
+        // Register MCP servers
+        for mcpConfig in configuration.mcpServers {
+            await register(mcpServerConfiguration: mcpConfig)
+        }
+
+        // Register agents
+        for agent in configuration.agents {
             await register(agent: agent)
         }
 
@@ -78,6 +120,7 @@ actor LiveAgentCenter: AgentCenter {
             metadata: [
                 "model.count": .stringConvertible(configuration.models.count),
                 "agent.count": .stringConvertible(configuration.agents.count),
+                "mcp.count": .stringConvertible(configuration.mcpServers.count),
             ])
     }
 }

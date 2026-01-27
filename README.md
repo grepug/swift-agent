@@ -166,7 +166,7 @@ let config = AgentConfiguration(
             name: "filesystem",
             transport: .stdio(
                 command: "npx",
-                args: ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+                arguments: ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
                 env: [:]
             )
         )
@@ -212,7 +212,7 @@ try await agentCenter.load(configuration: config)
       "transport": {
         "type": "stdio",
         "command": "npx",
-        "args": [
+        "arguments": [
           "-y",
           "@modelcontextprotocol/server-filesystem",
           "/path/to/dir"
