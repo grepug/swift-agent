@@ -80,10 +80,12 @@ public final class FileDebugObserver: AgentCenterObserver {
     private struct Store {
         // Track run directories
         var sessionDirectories: [UUID: URL] = [:]  // sessionId -> directory
-        var sessionCounter: Int = 0  // Global session counter
         var runCounters: [UUID: Int] = [:]  // sessionId -> run number
         var runDirectories: [UUID: URL] = [:]  // runId -> run folder
         var fileCounters: [UUID: Int] = [:]  // runId -> next file number
+
+        // Track agent IDs per session for directory structure
+        var sessionAgents: [UUID: String] = [:]  // sessionId -> agentId
 
         // Track calls per session
         var sessionModelCalls: [UUID: [UUID: ModelCallData]] = [:]  // sessionId -> requestId -> data
@@ -141,22 +143,24 @@ public final class FileDebugObserver: AgentCenterObserver {
     public init(directory: URL) {
         self.directory = directory
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
 
-        // Scan existing session directories to find the highest number
-        if let contents = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
-            let maxNumber =
-                contents.compactMap { url -> Int? in
-                    let name = url.lastPathComponent
-                    // Match pattern: "01-UUID" or "02-UUID"
-                    guard let dashIndex = name.firstIndex(of: "-"),
-                        let number = Int(name[..<dashIndex])
-                    else {
-                        return nil
-                    }
-                    return number
-                }.max() ?? 0
-            store.withValue { $0.sessionCounter = maxNumber }
-        }
+    /// Sanitize agent ID for use in directory names: lowercase and replace whitespace with hyphens
+    private func sanitizeAgentId(_ agentId: String) -> String {
+        return agentId.lowercased().replacingOccurrences(of: " ", with: "-")
+    }
+
+    /// Format timestamp as YYYYMMDDHHMMSS in local timezone
+    private func formatTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        formatter.timeZone = TimeZone.current
+        return formatter.string(from: date)
+    }
+
+    /// Get first 6 characters of UUID string (lowercase)
+    private func uuidPrefix(_ uuid: UUID) -> String {
+        return String(uuid.uuidString.lowercased().prefix(6))
     }
 
     public func observe(_ event: AgentCenterEvent) {
@@ -164,15 +168,31 @@ public final class FileDebugObserver: AgentCenterObserver {
         writeEventLog(event)
 
         switch event {
-        case .agentExecutionStarted(_, let session, let timestamp):
+        case .agentExecutionStarted(let agent, let session, let timestamp):
             // Track session and prepare for new run
             store.withValue { store in
                 store.currentRunSession = session.sessionId
                 store.sessionStartTime[session.sessionId] = timestamp
+                store.sessionAgents[session.sessionId] = agent.id
+
                 if store.sessionDirectories[session.sessionId] == nil {
-                    store.sessionCounter += 1
-                    let sessionDirName = String(format: "%02d-%@", store.sessionCounter, session.sessionId.uuidString)
-                    let sessionDir = directory.appendingPathComponent(sessionDirName)
+                    // Create directory structure: agents/[agentId]/[timestamp-uuid]/
+                    let sanitizedAgentId = sanitizeAgentId(agent.id)
+                    let agentDir =
+                        directory
+                        .appendingPathComponent("agents")
+                        .appendingPathComponent(sanitizedAgentId)
+
+                    let timestampStr = formatTimestamp(timestamp)
+                    let uuidPrefixStr = uuidPrefix(session.sessionId)
+                    let sessionDirName = "\(timestampStr)-\(uuidPrefixStr)"
+                    let sessionDir = agentDir.appendingPathComponent(sessionDirName)
+
+                    // Check for collision (should be extremely rare)
+                    if fileManager.fileExists(atPath: sessionDir.path) {
+                        fatalError("Session directory collision: \(sessionDir.path)")
+                    }
+
                     try? fileManager.createDirectory(at: sessionDir, withIntermediateDirectories: true)
                     store.sessionDirectories[session.sessionId] = sessionDir
                     store.runCounters[session.sessionId] = 0
@@ -355,7 +375,8 @@ public final class FileDebugObserver: AgentCenterObserver {
             }
 
             // Write summary.json
-            writeSummaryFile(runDir: runDir, runId: run.id, sessionId: run.sessionId, endTime: event.timestamp)
+            let agentId = store.withValue { $0.sessionAgents[run.sessionId] } ?? "unknown"
+            writeSummaryFile(runDir: runDir, runId: run.id, sessionId: run.sessionId, agentId: agentId, endTime: event.timestamp)
 
             // Clean up this session's calls (not all sessions)
             store.withValue { store in
@@ -590,7 +611,7 @@ public final class FileDebugObserver: AgentCenterObserver {
         try? content.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
-    private func writeSummaryFile(runDir: URL, runId: UUID, sessionId: UUID, endTime: Date) {
+    private func writeSummaryFile(runDir: URL, runId: UUID, sessionId: UUID, agentId: String, endTime: Date) {
         let summaryURL = runDir.appendingPathComponent("summary.json")
 
         let (userInput, finalResponse, startTime, modelName, eventSummaries) = store.withValue { store -> (String, String, Date, String, [(String, String, Date, TimeInterval?, Int?, Int?, Bool?)]) in
@@ -701,6 +722,8 @@ public final class FileDebugObserver: AgentCenterObserver {
 
         // Build summary JSON
         let summary: [String: Any] = [
+            "agentId": agentId,
+            "sessionId": sessionId.uuidString,
             "userInput": userInput,
             "finalResponse": finalResponse,
             "modelName": modelName,
