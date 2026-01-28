@@ -14,7 +14,7 @@ struct ExampleRunner {
             print("📊 Debug logging enabled to: \(debugDir)")
             return [
                 ConsoleObserver(verbose: false),
-                FileDebugObserver(directory: url),
+                FileDebugObserver(debugDir: url),
             ]
         }
 
