@@ -1,7 +1,7 @@
 import Foundation
 
 /// In-memory implementation of storage (for development/testing)
-public actor InMemoryStorage: StorageProtocol {
+public actor InMemoryAgentStorage: AgentStorage {
     private var runsStorage: [String: [Run]] = [:]
     private var sessionStateStorage: [String: [UUID: AnyCodable]] = [:]
 

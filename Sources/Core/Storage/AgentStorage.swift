@@ -2,7 +2,7 @@ import Dependencies
 import Foundation
 
 /// Protocol for storing agent runs and session state
-public protocol StorageProtocol: Sendable {
+public protocol AgentStorage: Sendable {
     /// Retrieve all runs for an agent
     func runs(for agent: Agent) async throws -> [Run]
 
@@ -19,13 +19,13 @@ public protocol StorageProtocol: Sendable {
 }
 
 extension DependencyValues {
-    public var storage: StorageProtocol {
+    public var storage: AgentStorage {
         get { self[StorageKey.self] }
         set { self[StorageKey.self] = newValue }
     }
 
     private enum StorageKey: DependencyKey {
-        static let liveValue: StorageProtocol = InMemoryStorage()
-        static let testValue: StorageProtocol = InMemoryStorage()
+        static let liveValue: AgentStorage = InMemoryAgentStorage()
+        static let testValue: AgentStorage = InMemoryAgentStorage()
     }
 }
