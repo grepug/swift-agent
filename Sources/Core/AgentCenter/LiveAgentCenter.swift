@@ -229,6 +229,44 @@ extension LiveAgentCenter {
         try await discoverMCPServers(agent.mcpServerNames)
         logger.info("Agent prepared successfully", metadata: ["agent.id": .string(id)])
     }
+
+    func createSession(
+        agentId: String,
+        userId: UUID,
+        name: String? = nil
+    ) async throws -> AgentSession {
+        logger.info(
+            "Creating session",
+            metadata: [
+                "agent.id": .string(agentId),
+                "user.id": .string(userId.uuidString),
+                "name": .string(name ?? "unnamed"),
+            ])
+
+        // Validate agent exists
+        guard agents[agentId] != nil else {
+            logger.error("Cannot create session for non-existent agent", metadata: ["agent.id": .string(agentId)])
+            throw AgentError.agentNotFound(agentId)
+        }
+
+        let session = AgentSession(
+            agentId: agentId,
+            userId: userId,
+            name: name
+        )
+
+        @Dependency(\.storage) var storage
+        let createdSession = try await storage.upsertSession(session)
+
+        logger.info(
+            "Session created successfully",
+            metadata: [
+                "session.id": .string(createdSession.id.uuidString),
+                "agent.id": .string(agentId),
+            ])
+
+        return createdSession
+    }
 }
 
 // MARK: - Agent Execution
@@ -303,7 +341,25 @@ extension LiveAgentCenter {
             // Save to storage
             @Dependency(\.storage) var storage
             logger.debug("Saving run to storage", metadata: ["run.id": .string(run.id.uuidString)])
-            try await storage.append(run, for: agent)
+
+            // Verify session exists
+            guard
+                try await storage.getSession(
+                    sessionId: session.sessionId,
+                    agentId: session.agentId,
+                    userId: session.userId
+                ) != nil
+            else {
+                logger.error(
+                    "Session not found",
+                    metadata: [
+                        "session.id": .string(session.sessionId.uuidString),
+                        "agent.id": .string(session.agentId),
+                    ])
+                throw AgentError.sessionNotFound(session.sessionId)
+            }
+
+            try await storage.appendRun(run, sessionId: session.sessionId)
             logger.info("Agent run completed successfully", metadata: ["run.id": .string(run.id.uuidString), "message.count": .stringConvertible(messages.count)])
 
             emit(
@@ -553,7 +609,15 @@ extension LiveAgentCenter {
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
-        let previousRuns = includeHistory ? try await storage.runs(for: agent) : []
+        let previousRuns =
+            includeHistory
+            ? try await storage.getSessions(
+                agentId: agent.id,
+                userId: session.userId,
+                limit: nil,
+                offset: nil,
+                sortBy: nil
+            ).flatMap(\.runs) : []
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
 
         emit(

@@ -163,16 +163,24 @@ struct ExampleRunner {
             // Setup AgentCenter with configuration and get agent ID
             let agentId = await setupAgentCenter()
 
-            // User constructs the session context themselves
-            let session = AgentSessionContext(
+            // Create a session for this user
+            let userId = UUID()
+            let createdSession = try await center.createSession(
                 agentId: agentId,
-                userId: UUID(),
-                sessionId: UUID()
+                userId: userId,
+                name: "Example Session"
             )
 
             print("Agent session created")
-            print("User ID: \(session.userId)")
-            print("Session ID: \(session.sessionId)")
+            print("User ID: \(createdSession.userId)")
+            print("Session ID: \(createdSession.id)")
+
+            // Construct session context for running the agent
+            let session = AgentSessionContext(
+                agentId: agentId,
+                userId: userId,
+                sessionId: createdSession.id
+            )
 
             // Example 1: Regular run with tool calling
             print("=== Example 1: Tool Calling ===")

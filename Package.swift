@@ -26,6 +26,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.9.1"),
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.7.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -48,6 +49,15 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/Example"
+        ),
+        .executableTarget(
+            name: "CLI",
+            dependencies: [
+                "SwiftAgentCore",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Configuration", package: "swift-configuration"),
+            ],
+            path: "Sources/CLI"
         ),
         .testTarget(
             name: "SwiftAgentCoreTests",
