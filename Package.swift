@@ -19,6 +19,10 @@ let package = Package(
             name: "swift-agent-example",
             targets: ["Example"]
         ),
+        .executable(
+            name: "swift-agent-cli",
+            targets: ["CLI"]
+        ),
     ],
     dependencies: [
         // .package(url: "https://github.com/grepug/AnyLanguageModel.git", branch: "main"),

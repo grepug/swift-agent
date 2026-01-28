@@ -10,41 +10,72 @@ protocol MyParserableCommand: AsyncParsableCommand {
 }
 
 extension MyParserableCommand {
+    static func makeObservers() -> [any AgentCenterObserver] {
+        // Check for debug directory from environment
+        if let debugDir = ProcessInfo.processInfo.environment["SWIFT_AGENT_DEBUG_DIR"] {
+            let url = URL(fileURLWithPath: debugDir)
+            print("📊 Debug logging enabled to: \(debugDir)")
+            return [
+                ConsoleObserver(verbose: false),
+                FileDebugObserver(debugDir: url),
+            ]
+        }
+
+        // Default: use .debug directory for debug traces
+        let defaultDebugDir = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent(".debug")
+        print("📊 Debug logging to: \(defaultDebugDir.path)")
+        return [
+            ConsoleObserver(verbose: false),
+            FileDebugObserver(debugDir: defaultDebugDir),
+        ]
+    }
+
     func run() async throws {
-        @Dependency(\.agentCenter) var agentCenter
-
-        let reader = ConfigReader(
-            providers: [
-                try! await EnvironmentVariablesProvider(
-                    environmentFilePath: ".env",
-                    secretsSpecifier: .specific(["DOUBAO_API_KEY", "DOUBAO_API_URL", "DOUBAO_FLASH_MODEL_ID", "DOUBAO_1_6_ID"])
-                )
-            ]
-        )
-
-        let apiKey = reader.string(forKey: "DOUBAO_API_KEY")!
-        let baseURL = reader.string(forKey: "DOUBAO_API_URL")!
-        _ = reader.string(forKey: "DOUBAO_FLASH_MODEL_ID")!
-        let doubao1_6Id = reader.string(forKey: "DOUBAO_1_6_ID")!
-
-        // Create OpenAI model
-        let doubaoModel = OpenAILanguageModel(
-            baseURL: .init(string: baseURL)!,
-            apiKey: apiKey,
-            model: doubao1_6Id,
-        )
-
-        await agentCenter.register(agent: ChatAgent.agent)
-        await agentCenter.register(
-            model: doubaoModel,
-            named: "doubao"
-        )
-
+        // Configure observers FIRST, before any agent operations
         try await withDependencies {
-            $0.agentObservers = [
-                FileDebugObserver()
-            ]
+            $0.agentObservers = Self.makeObservers()
         } operation: {
+            @Dependency(\.agentCenter) var agentCenter
+
+            let reader = ConfigReader(
+                providers: [
+                    try! await EnvironmentVariablesProvider(
+                        environmentFilePath: ".env",
+                        secretsSpecifier: .specific(["DOUBAO_API_KEY", "DOUBAO_API_URL", "DOUBAO_FLASH_MODEL_ID", "DOUBAO_1_6_ID"])
+                    )
+                ]
+            )
+
+            let apiKey = reader.string(forKey: "DOUBAO_API_KEY")!
+            let baseURL = reader.string(forKey: "DOUBAO_API_URL")!
+            let doubaoFlash = reader.string(forKey: "DOUBAO_FLASH_MODEL_ID")!
+            // let doubao1_6Id = reader.string(forKey: "DOUBAO_1_6_ID")!
+
+            // Create OpenAI model
+            let doubaoModel = OpenAILanguageModel(
+                baseURL: .init(string: baseURL)!,
+                apiKey: apiKey,
+                model: doubaoFlash,
+            )
+
+            let playwrightServer = MCPServerConfiguration(
+                name: "PlaywrightMCP",
+                transport: .stdio(
+                    command: "npx",
+                    arguments: ["@playwright/mcp@latest"]
+                )
+            )
+
+            await agentCenter.register(agent: ChatAgent.agent)
+            await agentCenter.register(
+                model: doubaoModel,
+                named: "doubao"
+            )
+            await agentCenter.register(
+                mcpServerConfiguration: playwrightServer
+            )
+
             try await runWithDependencies()
         }
     }
@@ -72,7 +103,7 @@ struct Session: AsyncParsableCommand {
         )
 
         @Option(name: .long, help: "Agent ID to use for this session")
-        var agentId: String = "chat-agent"
+        var agentId: String = "chat"
 
         @Option(name: .long, help: "User ID for this session")
         var userId: String?
@@ -96,6 +127,7 @@ struct Session: AsyncParsableCommand {
             print("✅ Created session: \(session.id.uuidString)")
             print("   Agent ID: \(agentId)")
             print("   User ID: \(userId.uuidString)")
+            print("   Message Count: \(session.messages.count)")
         }
     }
 

@@ -8,6 +8,6 @@ enum ChatAgent {
         description: "An agent that performs the first task.",
         modelName: "doubao",
         instructions: instructions,
-        toolNames: [],
+        mcpServerNames: ["PlaywrightMCP"]
     )
 }

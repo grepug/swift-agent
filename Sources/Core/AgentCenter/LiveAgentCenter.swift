@@ -312,6 +312,10 @@ extension LiveAgentCenter {
             // Use AnyLanguageModel's session to handle the conversation
             // Individual API calls will be tracked via handleModelEvent()
             logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
+
+            // Track the number of entries before responding to identify new messages
+            let entriesBeforeResponse = modelSession.transcript.count
+
             let response = try await modelSession.respond(to: message, generating: T.self)
 
             let content: Data?
@@ -325,8 +329,9 @@ extension LiveAgentCenter {
                 content = try JSONEncoder().encode(response.content)
             }
 
-            // Create messages from the session transcript
-            let messages = extractMessages(from: modelSession.transcript)
+            // Extract only NEW messages from this turn (entries added after responding)
+            let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
+            let messages = extractMessages(from: Transcript(entries: newEntries))
             logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
 
             // Create run record
@@ -609,15 +614,23 @@ extension LiveAgentCenter {
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
-        let previousRuns =
-            includeHistory
-            ? try await storage.getSessions(
+
+        // Load runs only from the current session, not from all sessions
+        let previousRuns: [Run]
+        if includeHistory {
+            if let currentSession = try await storage.getSession(
+                sessionId: session.sessionId,
                 agentId: agent.id,
-                userId: session.userId,
-                limit: nil,
-                offset: nil,
-                sortBy: nil
-            ).flatMap(\.runs) : []
+                userId: session.userId
+            ) {
+                previousRuns = currentSession.runs
+            } else {
+                previousRuns = []
+            }
+        } else {
+            previousRuns = []
+        }
+
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
 
         emit(

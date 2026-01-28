@@ -9,3 +9,4 @@ DerivedData/
 .env
 debug/
 .data
+.debug
