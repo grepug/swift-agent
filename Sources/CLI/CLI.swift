@@ -16,8 +16,8 @@ extension MyParserableCommand {
             let url = URL(fileURLWithPath: debugDir)
             print("📊 Debug logging enabled to: \(debugDir)")
             return [
-                ConsoleObserver(verbose: false),
-                FileDebugObserver(debugDir: url),
+                // ConsoleObserver(verbose: false),
+                FileDebugObserver(debugDir: url)
             ]
         }
 
@@ -26,8 +26,8 @@ extension MyParserableCommand {
             .appendingPathComponent(".debug")
         print("📊 Debug logging to: \(defaultDebugDir.path)")
         return [
-            ConsoleObserver(verbose: false),
-            FileDebugObserver(debugDir: defaultDebugDir),
+            // ConsoleObserver(verbose: false),
+            FileDebugObserver(debugDir: defaultDebugDir)
         ]
     }
 
@@ -67,7 +67,11 @@ extension MyParserableCommand {
                 )
             )
 
-            await agentCenter.register(agent: ChatAgent.agent)
+            await agentCenter.register(tool: CommandTool())
+            await agentCenter.register(agent: A.chatAgent)
+            await agentCenter.register(agent: A.testAgent)
+            await agentCenter.register(agent: A.practiceAgent)
+
             await agentCenter.register(
                 model: doubaoModel,
                 named: "doubao"
@@ -212,7 +216,14 @@ struct Session: AsyncParsableCommand {
         @Argument(help: "The message to send")
         var message: String
 
-        @Option(name: .long, help: "Session ID to chat with", transform: { UUID(uuidString: $0)! })
+        @Option(
+            name: .long, help: "Session ID to chat with",
+            transform: {
+                guard let uuid = UUID(uuidString: $0) else {
+                    throw ValidationError("Invalid UUID format: \($0)")
+                }
+                return uuid
+            })
         var sessionId: UUID
 
         @Option(name: .long, help: "Agent ID (creates temporary session if no session-id)")

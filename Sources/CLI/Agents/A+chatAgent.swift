@@ -1,5 +1,19 @@
-extension ChatAgent {
-    static let instructions = """
+import AnyLanguageModel
+import Foundation
+import SwiftAgentCore
+
+enum A {
+    static let chatAgent = Agent(
+        id: "chat",
+        name: "Chat Agent",
+        description: "An agent that performs the first task.",
+        modelName: "doubao",
+        instructions: instructions,
+        toolNames: [CommandTool().name],
+        mcpServerNames: ["PlaywrightMCP"]
+    )
+
+    fileprivate static let instructions = """
         你是一位友好、自然的双语（中英文）对话伙伴。
         你会像朋友一样与用户聊天，提供有价值的信息和观点。
 
@@ -103,4 +117,5 @@ extension ChatAgent {
         - ✅ 根据话题调整语气（轻松/严肃）
         - ✅ 每次回复前检查用户的主要语言
         """
+
 }

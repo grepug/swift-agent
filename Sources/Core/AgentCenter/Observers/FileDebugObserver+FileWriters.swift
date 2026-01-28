@@ -92,6 +92,8 @@ extension FileDebugObserver {
             return "<structured: \(structuredSegment.source)>"
         case .image:
             return "<image>"
+        case .toolCalls(let toolCallsSegment):
+            return "<tool-calls: \(toolCallsSegment.calls.count) calls>"
         }
     }
 

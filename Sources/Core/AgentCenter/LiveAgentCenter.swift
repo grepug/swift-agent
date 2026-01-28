@@ -678,8 +678,39 @@ extension LiveAgentCenter {
                         )
                         entries.append(promptEntry)
                     }
+
                 case .assistant:
-                    if let content = message.content {
+                    // Handle both text responses and tool calls
+                    if let toolCalls = message.toolCalls, !toolCalls.isEmpty {
+                        // Reconstruct assistant message with tool calls
+                        let transcriptCalls = toolCalls.compactMap { tc -> Transcript.ToolCall? in
+                            // Convert stored string arguments back to GeneratedContent
+                            guard let data = tc.arguments.data(using: .utf8),
+                                let decodedContent = try? JSONDecoder().decode(GeneratedContent.self, from: data)
+                            else {
+                                // Fallback: wrap plain string as GeneratedContent
+                                return Transcript.ToolCall(
+                                    id: tc.id,
+                                    toolName: tc.name,
+                                    arguments: GeneratedContent(tc.arguments)
+                                )
+                            }
+                            return Transcript.ToolCall(
+                                id: tc.id,
+                                toolName: tc.name,
+                                arguments: decodedContent
+                            )
+                        }
+                        let toolCallsSegment = Transcript.ToolCallsSegment(calls: transcriptCalls)
+                        let responseEntry = Transcript.Entry.response(
+                            Transcript.Response(
+                                assetIDs: [],
+                                segments: [.toolCalls(toolCallsSegment)]
+                            )
+                        )
+                        entries.append(responseEntry)
+                    } else if let content = message.content {
+                        // Regular text response
                         let responseEntry = Transcript.Entry.response(
                             Transcript.Response(
                                 assetIDs: [],
@@ -688,11 +719,14 @@ extension LiveAgentCenter {
                         )
                         entries.append(responseEntry)
                     }
+
+                case .tool:
+                    // Tool results are handled by AnyLanguageModel internally
+                    // We store them for record-keeping but don't reconstruct them into transcript
+                    break
+
                 case .system:
                     // System messages are handled via instructions
-                    break
-                case .tool:
-                    // TODO: Reconstruct tool call entries if needed
                     break
                 }
             }
@@ -778,18 +812,57 @@ extension LiveAgentCenter {
                 }
 
             case .response(let response):
-                let content = extractTextContent(from: response.segments)
-                if !content.isEmpty {
-                    messages.append(.assistant(content))
+                // Check for tool calls in response segments
+                let toolCalls = extractToolCalls(from: response.segments)
+
+                if !toolCalls.isEmpty {
+                    // Assistant message with tool calls (no text content)
+                    messages.append(.assistantWithTools(toolCalls))
+                } else {
+                    // Regular assistant message with text content
+                    let content = extractTextContent(from: response.segments)
+                    if !content.isEmpty {
+                        messages.append(.assistant(content))
+                    }
                 }
 
             default:
-                // TODO: Extract tool calls if needed
+                // Other entry types not yet supported
                 break
             }
         }
 
         return messages
+    }
+
+    private func extractToolCalls(from segments: [Transcript.Segment]) -> [ToolCall] {
+        var toolCalls: [ToolCall] = []
+
+        for segment in segments {
+            if case .toolCalls(let toolCallsSegment) = segment {
+                for call in toolCallsSegment.calls {
+                    // Convert GeneratedContent to String for storage
+                    let argumentsString: String
+                    if let data = try? JSONEncoder().encode(call.arguments),
+                        let jsonString = String(data: data, encoding: .utf8)
+                    {
+                        argumentsString = jsonString
+                    } else {
+                        // Fallback: use string description
+                        argumentsString = String(describing: call.arguments)
+                    }
+
+                    let toolCall = ToolCall(
+                        id: call.id,
+                        name: call.toolName,
+                        arguments: argumentsString
+                    )
+                    toolCalls.append(toolCall)
+                }
+            }
+        }
+
+        return toolCalls
     }
 
     private func extractTextContent(from segments: [Transcript.Segment]) -> String {
