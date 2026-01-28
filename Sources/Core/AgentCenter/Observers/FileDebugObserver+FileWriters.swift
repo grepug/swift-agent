@@ -57,7 +57,17 @@ extension FileDebugObserver {
         for entry in transcript {
             switch entry {
             case .instructions(let instructions):
-                result += "[Instructions] \(instructions.segments.count) segments, \(instructions.toolDefinitions.count) tools\n\n"
+                let content = instructions.segments.map { segmentToString($0) }.joined(separator: "\n")
+                result += "[Instructions] \(instructions.segments.count) segments, \(instructions.toolDefinitions.count) tools\n\n\(content)\n\n"
+
+                // Add tool definitions
+                if !instructions.toolDefinitions.isEmpty {
+                    result += "## Available Tools (\(instructions.toolDefinitions.count))\n\n"
+                    for (index, toolDef) in instructions.toolDefinitions.enumerated() {
+                        result += "\(index + 1). **\(toolDef.name)**: \(toolDef.description)\n"
+                    }
+                    result += "\n"
+                }
             case .prompt(let prompt):
                 let content = prompt.segments.map { segmentToString($0) }.joined(separator: " ")
                 result += "[Prompt] \(content)\n\n"
