@@ -53,8 +53,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent
@@ -115,8 +115,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent
@@ -181,8 +181,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent
@@ -241,8 +241,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent
@@ -304,8 +304,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent with specific message
@@ -373,8 +373,8 @@ struct HooksTests {
         
         let context = AgentSessionContext(
             agentId: agent.id,
-            sessionId: session.id,
-            userId: session.userId
+            userId: session.userId,
+            sessionId: session.id
         )
         
         // Run agent
