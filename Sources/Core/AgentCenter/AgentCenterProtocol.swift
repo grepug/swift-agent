@@ -44,6 +44,12 @@ public protocol AgentCenter: Sendable {
     func register(mcpServerConfiguration: MCPServerConfiguration) async
     func mcpServerConfiguration(named name: String) async -> MCPServerConfiguration?
 
+    // Hook management
+    func register(preHook: RegisteredPreHook) async
+    func register(postHook: RegisteredPostHook) async
+    func preHook(named name: String) async -> RegisteredPreHook?
+    func postHook(named name: String) async -> RegisteredPostHook?
+
     init()
 
     /// Loads models, agents, and MCP servers from a configuration object.

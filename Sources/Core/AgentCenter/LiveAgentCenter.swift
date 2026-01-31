@@ -17,6 +17,11 @@ actor LiveAgentCenter: AgentCenter {
 
     private var mcpServerConfigurations: [String: MCPServerConfiguration] = [:]
 
+    // Hook management
+    private var preHooks: [String: RegisteredPreHook] = [:]
+    private var postHooks: [String: RegisteredPostHook] = [:]
+    private var backgroundHookTasks: [UUID: Task<Void, Never>] = [:]
+
     @Dependency(\.agentObservers) private var observers
 
     init() {}
@@ -296,6 +301,17 @@ extension LiveAgentCenter {
             ))
 
         do {
+            // Build hook context
+            let hookContext = HookContext(
+                agent: agent,
+                session: session,
+                userMessage: message,
+                metadata: [:]
+            )
+
+            // Execute pre-hooks
+            try await executePreHooks(for: agent, context: hookContext)
+
             // Discover MCP servers for this agent
             try await discoverMCPServers(agent.mcpServerNames)
 
@@ -380,6 +396,9 @@ extension LiveAgentCenter {
                     run: run,
                     timestamp: Date()
                 ))
+
+            // Execute post-hooks (after run is complete and saved)
+            await executePostHooks(for: agent, context: hookContext, run: run)
 
             return run
         } catch {
@@ -872,5 +891,151 @@ extension LiveAgentCenter {
             }
             return nil
         }.joined(separator: "\n")
+    }
+}
+
+// MARK: - Hook Management
+
+extension LiveAgentCenter {
+    func register(preHook: RegisteredPreHook) async {
+        logger.info("Registering pre-hook", metadata: ["hook.name": .string(preHook.config.name)])
+        preHooks[preHook.config.name] = preHook
+        logger.debug("Pre-hook registered successfully", metadata: ["hook.name": .string(preHook.config.name)])
+    }
+
+    func register(postHook: RegisteredPostHook) async {
+        logger.info("Registering post-hook", metadata: ["hook.name": .string(postHook.config.name)])
+        postHooks[postHook.config.name] = postHook
+        logger.debug("Post-hook registered successfully", metadata: ["hook.name": .string(postHook.config.name)])
+    }
+
+    func preHook(named name: String) async -> RegisteredPreHook? {
+        let hook = preHooks[name]
+        if hook != nil {
+            logger.debug("Pre-hook found", metadata: ["hook.name": .string(name)])
+        } else {
+            logger.warning("Pre-hook not found", metadata: ["hook.name": .string(name)])
+        }
+        return hook
+    }
+
+    func postHook(named name: String) async -> RegisteredPostHook? {
+        let hook = postHooks[name]
+        if hook != nil {
+            logger.debug("Post-hook found", metadata: ["hook.name": .string(name)])
+        } else {
+            logger.warning("Post-hook not found", metadata: ["hook.name": .string(name)])
+        }
+        return hook
+    }
+
+    /// Execute a non-blocking hook in a background task
+    private func executeNonBlockingHook<H: Sendable>(
+        _ hook: H,
+        hookName: String,
+        execute: @Sendable @escaping (H) async throws -> Void
+    ) {
+        let taskId = UUID()
+        let task = Task {
+            do {
+                try await execute(hook)
+            } catch {
+                logger.warning("Non-blocking hook failed", metadata: [
+                    "hook.name": .string(hookName),
+                    "error": .string(String(describing: error))
+                ])
+            }
+            await self.removeBackgroundTask(taskId)
+        }
+        backgroundHookTasks[taskId] = task
+    }
+
+    private func removeBackgroundTask(_ id: UUID) {
+        backgroundHookTasks.removeValue(forKey: id)
+    }
+
+    /// Wait for all background hooks to complete (for graceful shutdown)
+    func waitForBackgroundHooks() async {
+        logger.info("Waiting for background hooks", metadata: ["task.count": .stringConvertible(backgroundHookTasks.count)])
+        await withTaskGroup(of: Void.self) { group in
+            for task in backgroundHookTasks.values {
+                group.addTask { await task.value }
+            }
+        }
+        logger.info("All background hooks completed")
+    }
+
+    /// Cancel all background hooks
+    func cancelBackgroundHooks() {
+        logger.info("Cancelling background hooks", metadata: ["task.count": .stringConvertible(backgroundHookTasks.count)])
+        for task in backgroundHookTasks.values {
+            task.cancel()
+        }
+        backgroundHookTasks.removeAll()
+        logger.info("All background hooks cancelled")
+    }
+
+    /// Execute pre-hooks for an agent
+    private func executePreHooks(for agent: Agent, context: HookContext) async throws {
+        let allPreHooks = agent.preHookNames.compactMap { preHooks[$0] }
+        guard !allPreHooks.isEmpty else { return }
+
+        let blockingHooks = allPreHooks.filter { $0.config.blocking }
+        let nonBlockingHooks = allPreHooks.filter { !$0.config.blocking }
+
+        logger.debug("Executing pre-hooks", metadata: [
+            "blocking.count": .stringConvertible(blockingHooks.count),
+            "non-blocking.count": .stringConvertible(nonBlockingHooks.count)
+        ])
+
+        // Execute blocking pre-hooks sequentially
+        for hook in blockingHooks {
+            logger.debug("Executing blocking pre-hook", metadata: ["hook.name": .string(hook.config.name)])
+            try await hook.execute(context)
+        }
+
+        // Launch non-blocking pre-hooks
+        for hook in nonBlockingHooks {
+            logger.debug("Launching non-blocking pre-hook", metadata: ["hook.name": .string(hook.config.name)])
+            executeNonBlockingHook(hook, hookName: hook.config.name) { hook in
+                try await hook.execute(context)
+            }
+        }
+    }
+
+    /// Execute post-hooks for an agent
+    private func executePostHooks(for agent: Agent, context: HookContext, run: Run) async {
+        let allPostHooks = agent.postHookNames.compactMap { postHooks[$0] }
+        guard !allPostHooks.isEmpty else { return }
+
+        let blockingHooks = allPostHooks.filter { $0.config.blocking }
+        let nonBlockingHooks = allPostHooks.filter { !$0.config.blocking }
+
+        logger.debug("Executing post-hooks", metadata: [
+            "blocking.count": .stringConvertible(blockingHooks.count),
+            "non-blocking.count": .stringConvertible(nonBlockingHooks.count)
+        ])
+
+        // Execute blocking post-hooks sequentially
+        for hook in blockingHooks {
+            logger.debug("Executing blocking post-hook", metadata: ["hook.name": .string(hook.config.name)])
+            do {
+                try await hook.execute(context, run)
+            } catch {
+                // Log error but don't propagate - post-hooks shouldn't fail the run
+                logger.warning("Blocking post-hook failed", metadata: [
+                    "hook.name": .string(hook.config.name),
+                    "error": .string(String(describing: error))
+                ])
+            }
+        }
+
+        // Launch non-blocking post-hooks
+        for hook in nonBlockingHooks {
+            logger.debug("Launching non-blocking post-hook", metadata: ["hook.name": .string(hook.config.name)])
+            executeNonBlockingHook(hook, hookName: hook.config.name) { hook in
+                try await hook.execute(context, run)
+            }
+        }
     }
 }
