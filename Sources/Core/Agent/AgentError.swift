@@ -7,6 +7,7 @@ public enum AgentError: Error, CustomStringConvertible {
     case noResponseFromModel
     case invalidConfiguration(String)
     case invalidJSONResponse
+    case sessionNotFound(UUID)
 
     public var description: String {
         switch self {
@@ -20,6 +21,8 @@ public enum AgentError: Error, CustomStringConvertible {
             return "Invalid configuration: \(message)"
         case .invalidJSONResponse:
             return "Could not parse JSON from model response"
+        case .sessionNotFound(let id):
+            return "Session with ID \(id) not found. Create a session first using createSession()."
         }
     }
 }

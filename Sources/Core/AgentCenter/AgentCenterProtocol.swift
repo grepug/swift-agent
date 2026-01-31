@@ -10,6 +10,13 @@ public protocol AgentCenter: Sendable {
     func agent(id: String) async -> Agent?
     func prepareAgent(_ id: String) async throws
 
+    // Session management
+    func createSession(
+        agentId: String,
+        userId: UUID,
+        name: String?
+    ) async throws -> AgentSession
+
     // Agent execution
     func runAgent<T: Codable & Generable>(
         session: AgentSessionContext,

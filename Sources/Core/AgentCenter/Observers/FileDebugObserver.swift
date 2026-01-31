@@ -23,10 +23,8 @@ public final class FileDebugObserver: AgentCenterObserver {
         case .agentExecutionStarted(let agent, let session, _):
             handleAgentExecutionStarted(agentId: agent.id, sessionId: session.sessionId)
 
-        case .agentExecutionCompleted:
-            // We can get the sessionId from the run
-            // For now, we'll handle summary in the failed case or when we get the response
-            break
+        case .agentExecutionCompleted(let run, _):
+            handleAgentExecutionCompleted(run: run)
 
         case .agentExecutionFailed(let session, let error, _):
             handleAgentExecutionFailed(sessionId: session.sessionId, error: error)
@@ -88,30 +86,22 @@ public final class FileDebugObserver: AgentCenterObserver {
                 withIntermediateDirectories: true
             )
 
-            // Create session directory: [yyyyMMddHHmmss-6char]
-            let timestamp = formatTimestamp(Date())
+            // Look for existing session directory or create new one
             let uuidPrefix = uuidPrefix(sessionId)
-            let sessionDirName = "\(timestamp)-\(uuidPrefix)"
-            let sessionDir = agentDir.appendingPathComponent(sessionDirName)
-
-            // Check for collision (should be extremely rare)
-            if FileManager.default.fileExists(atPath: sessionDir.path) {
-                fatalError("Session directory already exists: \(sessionDir.path)")
-            }
-
-            try? FileManager.default.createDirectory(
-                at: sessionDir,
-                withIntermediateDirectories: true
+            let sessionDir = findOrCreateSessionDirectory(
+                in: agentDir,
+                sessionId: sessionId,
+                uuidPrefix: uuidPrefix
             )
 
-            // Create initial run directory
-            let runDirName = "run-001"
+            // Determine next run number
+            let runNumber = getNextRunNumber(in: sessionDir)
+            let runDirName = String(format: "run-%03d", runNumber)
             let runDir = sessionDir.appendingPathComponent(runDirName)
             try? FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
 
             store.sessionDirectories[sessionId] = sessionDir
-            // We'll track the run dir when we get the first model request
-            store.runCounters[sessionId] = 1
+            store.runCounters[sessionId] = runNumber
             store.currentRunSession = sessionId
             store.fileCounters[sessionId] = 1
 
@@ -120,23 +110,139 @@ public final class FileDebugObserver: AgentCenterObserver {
         }
     }
 
+    private func findOrCreateSessionDirectory(
+        in agentDir: URL,
+        sessionId: UUID,
+        uuidPrefix: String
+    ) -> URL {
+        // Look for existing directory with this session ID prefix
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: agentDir,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents where dir.hasDirectoryPath {
+                // Check if directory name ends with the session UUID prefix
+                if dir.lastPathComponent.hasSuffix("-\(uuidPrefix)") {
+                    return dir
+                }
+            }
+        }
+
+        // No existing directory found, create new one with timestamp
+        let timestamp = formatTimestamp(Date())
+        let sessionDirName = "\(timestamp)-\(uuidPrefix)"
+        let sessionDir = agentDir.appendingPathComponent(sessionDirName)
+        try? FileManager.default.createDirectory(
+            at: sessionDir,
+            withIntermediateDirectories: true
+        )
+        return sessionDir
+    }
+
+    private func getNextRunNumber(in sessionDir: URL) -> Int {
+        // Find existing run directories and get the highest number
+        guard
+            let contents = try? FileManager.default.contentsOfDirectory(
+                at: sessionDir,
+                includingPropertiesForKeys: nil
+            )
+        else {
+            return 1
+        }
+
+        let runNumbers =
+            contents
+            .filter { $0.hasDirectoryPath && $0.lastPathComponent.hasPrefix("run-") }
+            .compactMap { dir -> Int? in
+                let name = dir.lastPathComponent
+                let numberStr = name.replacingOccurrences(of: "run-", with: "")
+                return Int(numberStr)
+            }
+
+        return (runNumbers.max() ?? 0) + 1
+    }
+
+    private func handleAgentExecutionCompleted(run: Run) {
+        store.withValue { store in
+            let sessionId = run.sessionId
+
+            guard let sessionDir = store.sessionDirectories[sessionId],
+                let agentId = store.sessionAgents[sessionId],
+                let runNumber = store.runCounters[sessionId]
+            else { return }
+
+            let runDirName = String(format: "run-%03d", runNumber)
+            let runDir = sessionDir.appendingPathComponent(runDirName)
+
+            // Collect all events (API calls and tool calls) with their timestamps
+            var events: [(timestamp: Date, write: (URL, Int) -> Void)] = []
+
+            // Add model calls
+            let modelCalls = store.sessionModelCalls[sessionId] ?? [:]
+            for (_, callData) in modelCalls {
+                events.append(
+                    (
+                        timestamp: callData.startTime,
+                        write: { dir, number in
+                            self.writeAPICallFile(callData, to: dir, number: number)
+                        }
+                    ))
+            }
+
+            // Add tool calls
+            let toolCalls = store.sessionToolCalls[sessionId] ?? [:]
+            for (_, callData) in toolCalls {
+                events.append(
+                    (
+                        timestamp: callData.startTime,
+                        write: { dir, number in
+                            self.writeToolCallFile(callData, to: dir, number: number)
+                        }
+                    ))
+            }
+
+            // Sort by timestamp and write files in chronological order
+            let sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
+            for (index, event) in sortedEvents.enumerated() {
+                let fileNumber = index + 1
+                event.write(runDir, fileNumber)
+            }
+
+            // Write summary file for this run
+            let inputTokens = modelCalls.values.compactMap(\.inputTokens).reduce(0, +)
+            let outputTokens = modelCalls.values.compactMap(\.outputTokens).reduce(0, +)
+
+            writeSummary(
+                to: runDir,
+                sessionId: sessionId,
+                agentId: agentId,
+                store: &store,
+                endTime: Date(),
+                inputTokens: inputTokens,
+                outputTokens: outputTokens
+            )
+
+            store.currentRunSession = nil
+        }
+    }
+
     private func handleAgentExecutionFailed(sessionId: UUID, error: Error) {
         store.withValue { store in
             guard let sessionDir = store.sessionDirectories[sessionId],
-                let agentId = store.sessionAgents[sessionId]
+                let agentId = store.sessionAgents[sessionId],
+                let runNumber = store.runCounters[sessionId]
             else { return }
 
-            let errorMessage = "Error: \(error)"
-            store.sessionFinalResponse[sessionId] = errorMessage
+            store.sessionFinalResponse[sessionId] = "Error: \(error)"
 
-            writeSummaryFile(
-                to: sessionDir,
+            let runDirName = String(format: "run-%03d", runNumber)
+            let runDir = sessionDir.appendingPathComponent(runDirName)
+
+            writeSummary(
+                to: runDir,
                 sessionId: sessionId,
                 agentId: agentId,
-                userInput: store.sessionUserInput[sessionId],
-                finalResponse: errorMessage,
-                modelName: store.sessionModelName[sessionId],
-                startTime: store.sessionStartTime[sessionId],
+                store: &store,
                 endTime: Date(),
                 inputTokens: nil,
                 outputTokens: nil
@@ -144,6 +250,29 @@ public final class FileDebugObserver: AgentCenterObserver {
 
             store.currentRunSession = nil
         }
+    }
+
+    private func writeSummary(
+        to directory: URL,
+        sessionId: UUID,
+        agentId: String,
+        store: inout Store,
+        endTime: Date,
+        inputTokens: Int?,
+        outputTokens: Int?
+    ) {
+        writeSummaryFile(
+            to: directory,
+            sessionId: sessionId,
+            agentId: agentId,
+            userInput: store.sessionUserInput[sessionId],
+            finalResponse: store.sessionFinalResponse[sessionId],
+            modelName: store.sessionModelName[sessionId],
+            startTime: store.sessionStartTime[sessionId],
+            endTime: endTime,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens
+        )
     }
 
     private func handleModelRequestSending(
@@ -188,16 +317,16 @@ public final class FileDebugObserver: AgentCenterObserver {
         outTokens: Int?
     ) {
         store.withValue { store in
-            // Update the model call data
-            var callsForSession = store.sessionModelCalls[sessionId] ?? [:]
-            if var callData = callsForSession[requestId] {
+            updateModelCall(
+                sessionId: sessionId,
+                requestId: requestId,
+                in: &store
+            ) { callData in
                 callData.responseContent = content
                 callData.responseTime = Date()
                 callData.duration = duration
                 callData.inputTokens = inTokens
                 callData.outputTokens = outTokens
-                callsForSession[requestId] = callData
-                store.sessionModelCalls[sessionId] = callsForSession
             }
 
             // Store final response
@@ -232,27 +361,50 @@ public final class FileDebugObserver: AgentCenterObserver {
         success: Bool
     ) {
         store.withValue { store in
-            guard let sessionId = store.currentRunSession,
-                let sessionDir = store.sessionDirectories[sessionId]
-            else { return }
+            guard let sessionId = store.currentRunSession else { return }
 
-            // Get the run directory (run-001)
-            let runDir = sessionDir.appendingPathComponent("run-001")
-
-            var callsForSession = store.sessionToolCalls[sessionId] ?? [:]
-            if var callData = callsForSession[executionId] {
+            updateToolCall(
+                sessionId: sessionId,
+                executionId: executionId,
+                in: &store
+            ) { callData in
                 callData.result = result
                 callData.endTime = Date()
                 callData.duration = duration
                 callData.success = success
-                callsForSession[executionId] = callData
-                store.sessionToolCalls[sessionId] = callsForSession
-
-                // Write tool call file
-                let fileNumber = store.fileCounters[sessionId] ?? 1
-                store.fileCounters[sessionId] = fileNumber + 1
-                writeToolCallFile(callData, to: runDir, number: fileNumber)
             }
+
+            // Don't write file here - will be written in chronological order when run completes
+        }
+    }
+
+    // MARK: - Helper Methods
+
+    private func updateModelCall(
+        sessionId: UUID,
+        requestId: UUID,
+        in store: inout Store,
+        update: (inout ModelCallData) -> Void
+    ) {
+        var callsForSession = store.sessionModelCalls[sessionId] ?? [:]
+        if var callData = callsForSession[requestId] {
+            update(&callData)
+            callsForSession[requestId] = callData
+            store.sessionModelCalls[sessionId] = callsForSession
+        }
+    }
+
+    private func updateToolCall(
+        sessionId: UUID,
+        executionId: UUID,
+        in store: inout Store,
+        update: (inout ToolCallData) -> Void
+    ) {
+        var callsForSession = store.sessionToolCalls[sessionId] ?? [:]
+        if var callData = callsForSession[executionId] {
+            update(&callData)
+            callsForSession[executionId] = callData
+            store.sessionToolCalls[sessionId] = callsForSession
         }
     }
 }

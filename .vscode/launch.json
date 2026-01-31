@@ -19,6 +19,66 @@
       "target": "swift-agent-example",
       "configuration": "release",
       "preLaunchTask": "swift: Build Release swift-agent-example"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Debug storage-demo",
+      "target": "storage-demo",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug storage-demo"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Release storage-demo",
+      "target": "storage-demo",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release storage-demo"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Debug CLI",
+      "target": "CLI",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug CLI"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Release CLI",
+      "target": "CLI",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release CLI"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Debug swift-agent-cli",
+      "target": "swift-agent-cli",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug swift-agent-cli"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:swift-agent}",
+      "name": "Release swift-agent-cli",
+      "target": "swift-agent-cli",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release swift-agent-cli"
     }
   ]
 }

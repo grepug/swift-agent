@@ -8,3 +8,5 @@ DerivedData/
 .netrc
 .env
 debug/
+.data
+.debug

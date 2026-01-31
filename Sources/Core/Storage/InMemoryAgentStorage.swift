@@ -2,34 +2,140 @@ import Foundation
 
 /// In-memory implementation of storage (for development/testing)
 public actor InMemoryAgentStorage: AgentStorage {
-    private var runsStorage: [String: [Run]] = [:]
-    private var sessionStateStorage: [String: [UUID: AnyCodable]] = [:]
+    private var sessions: [UUID: AgentSession] = [:]
 
     public init() {}
 
-    public func runs(for agent: Agent) async throws -> [Run] {
-        return runsStorage[agent.id] ?? []
+    // MARK: - Session Management
+
+    public func getSession(
+        sessionId: UUID,
+        agentId: String? = nil,
+        userId: UUID? = nil
+    ) async throws -> AgentSession? {
+        guard let session = sessions[sessionId] else { return nil }
+
+        // Apply filters if provided
+        if let agentId = agentId, session.agentId != agentId { return nil }
+        if let userId = userId, session.userId != userId { return nil }
+
+        return session
     }
 
-    public func removeRun(id: UUID, sessionId: UUID) async throws {
-        // Need to find which agent this run belongs to
-        for (agentId, runs) in runsStorage {
-            if runs.contains(where: { $0.id == id }) {
-                runsStorage[agentId]?.removeAll(where: { $0.id == id })
-                return
-            }
+    public func getSessions(
+        agentId: String? = nil,
+        userId: UUID? = nil,
+        limit: Int? = nil,
+        offset: Int? = nil,
+        sortBy: SessionSortOption? = nil
+    ) async throws -> [AgentSession] {
+        var filtered = Array(sessions.values)
+
+        // Apply filters
+        if let agentId = agentId {
+            filtered = filtered.filter { $0.agentId == agentId }
         }
+        if let userId = userId {
+            filtered = filtered.filter { $0.userId == userId }
+        }
+
+        // Sort
+        filtered = sortSessions(filtered, by: sortBy ?? .updatedAtDesc)
+
+        // Paginate
+        let startIndex = offset ?? 0
+        let endIndex = limit.map { min(startIndex + $0, filtered.count) } ?? filtered.count
+
+        guard startIndex < filtered.count else { return [] }
+        return Array(filtered[startIndex..<endIndex])
     }
 
-    public func append(_ run: Run, for agent: Agent) async throws {
-        runsStorage[agent.id, default: []].append(run)
+    public func upsertSession(_ session: AgentSession) async throws -> AgentSession {
+        var updatedSession = session
+        updatedSession.updatedAt = Date()
+        sessions[session.id] = updatedSession
+        return updatedSession
     }
 
-    public func sessionState(for agent: Agent, sessionId: UUID) async throws -> AnyCodable? {
-        return sessionStateStorage[agent.id]?[sessionId]
+    public func deleteSession(sessionId: UUID) async throws -> Bool {
+        guard sessions[sessionId] != nil else { return false }
+        sessions.removeValue(forKey: sessionId)
+        return true
     }
 
-    public func updateSessionState(_ state: AnyCodable, for agent: Agent, sessionId: UUID) async throws {
-        sessionStateStorage[agent.id, default: [:]][sessionId] = state
+    public func renameSession(sessionId: UUID, name: String) async throws -> AgentSession? {
+        guard var session = sessions[sessionId] else { return nil }
+        session.name = name
+        session.updatedAt = Date()
+        sessions[sessionId] = session
+        return session
+    }
+
+    // MARK: - Run Management
+
+    public func getRun(runId: UUID, sessionId: UUID) async throws -> Run? {
+        guard let session = sessions[sessionId] else { return nil }
+        return session.runs.first { $0.id == runId }
+    }
+
+    public func appendRun(_ run: Run, sessionId: UUID) async throws {
+        guard var session = sessions[sessionId] else {
+            throw StorageError.sessionNotFound(sessionId)
+        }
+
+        session.runs.append(run)
+        session.updatedAt = Date()
+        sessions[sessionId] = session
+    }
+
+    public func removeRun(runId: UUID, sessionId: UUID) async throws {
+        guard var session = sessions[sessionId] else {
+            throw StorageError.sessionNotFound(sessionId)
+        }
+
+        session.runs.removeAll { $0.id == runId }
+        session.updatedAt = Date()
+        sessions[sessionId] = session
+    }
+
+    // MARK: - Utilities
+
+    public func getStats() async throws -> StorageStats {
+        let allSessions = Array(sessions.values)
+
+        let totalSessions = allSessions.count
+        let totalRuns = allSessions.reduce(0) { $0 + $1.runs.count }
+        let totalMessages = allSessions.reduce(0) { total, session in
+            total + session.runs.reduce(0) { $0 + $1.messages.count }
+        }
+        let oldestSession = allSessions.map(\.createdAt).min()
+        let newestSession = allSessions.map(\.updatedAt).max()
+
+        return StorageStats(
+            totalSessions: totalSessions,
+            totalRuns: totalRuns,
+            totalMessages: totalMessages,
+            oldestSession: oldestSession,
+            newestSession: newestSession
+        )
+    }
+
+    // MARK: - Private Helpers
+
+    private func sortSessions(_ sessions: [AgentSession], by option: SessionSortOption) -> [AgentSession] {
+        switch option {
+        case .createdAtAsc:
+            return sessions.sorted { $0.createdAt < $1.createdAt }
+        case .createdAtDesc:
+            return sessions.sorted { $0.createdAt > $1.createdAt }
+        case .updatedAtAsc:
+            return sessions.sorted { $0.updatedAt < $1.updatedAt }
+        case .updatedAtDesc:
+            return sessions.sorted { $0.updatedAt > $1.updatedAt }
+        case .nameAsc:
+            return sessions.sorted { ($0.name ?? "") < ($1.name ?? "") }
+        case .nameDesc:
+            return sessions.sorted { ($0.name ?? "") > ($1.name ?? "") }
+        }
     }
 }

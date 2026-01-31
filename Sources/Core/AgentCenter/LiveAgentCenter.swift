@@ -229,6 +229,44 @@ extension LiveAgentCenter {
         try await discoverMCPServers(agent.mcpServerNames)
         logger.info("Agent prepared successfully", metadata: ["agent.id": .string(id)])
     }
+
+    func createSession(
+        agentId: String,
+        userId: UUID,
+        name: String? = nil
+    ) async throws -> AgentSession {
+        logger.info(
+            "Creating session",
+            metadata: [
+                "agent.id": .string(agentId),
+                "user.id": .string(userId.uuidString),
+                "name": .string(name ?? "unnamed"),
+            ])
+
+        // Validate agent exists
+        guard agents[agentId] != nil else {
+            logger.error("Cannot create session for non-existent agent", metadata: ["agent.id": .string(agentId)])
+            throw AgentError.agentNotFound(agentId)
+        }
+
+        let session = AgentSession(
+            agentId: agentId,
+            userId: userId,
+            name: name
+        )
+
+        @Dependency(\.storage) var storage
+        let createdSession = try await storage.upsertSession(session)
+
+        logger.info(
+            "Session created successfully",
+            metadata: [
+                "session.id": .string(createdSession.id.uuidString),
+                "agent.id": .string(agentId),
+            ])
+
+        return createdSession
+    }
 }
 
 // MARK: - Agent Execution
@@ -274,6 +312,10 @@ extension LiveAgentCenter {
             // Use AnyLanguageModel's session to handle the conversation
             // Individual API calls will be tracked via handleModelEvent()
             logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
+
+            // Track the number of entries before responding to identify new messages
+            let entriesBeforeResponse = modelSession.transcript.count
+
             let response = try await modelSession.respond(to: message, generating: T.self)
 
             let content: Data?
@@ -287,8 +329,9 @@ extension LiveAgentCenter {
                 content = try JSONEncoder().encode(response.content)
             }
 
-            // Create messages from the session transcript
-            let messages = extractMessages(from: modelSession.transcript)
+            // Extract only NEW messages from this turn (entries added after responding)
+            let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
+            let messages = extractMessages(from: Transcript(entries: newEntries))
             logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
 
             // Create run record
@@ -303,7 +346,25 @@ extension LiveAgentCenter {
             // Save to storage
             @Dependency(\.storage) var storage
             logger.debug("Saving run to storage", metadata: ["run.id": .string(run.id.uuidString)])
-            try await storage.append(run, for: agent)
+
+            // Verify session exists
+            guard
+                try await storage.getSession(
+                    sessionId: session.sessionId,
+                    agentId: session.agentId,
+                    userId: session.userId
+                ) != nil
+            else {
+                logger.error(
+                    "Session not found",
+                    metadata: [
+                        "session.id": .string(session.sessionId.uuidString),
+                        "agent.id": .string(session.agentId),
+                    ])
+                throw AgentError.sessionNotFound(session.sessionId)
+            }
+
+            try await storage.appendRun(run, sessionId: session.sessionId)
             logger.info("Agent run completed successfully", metadata: ["run.id": .string(run.id.uuidString), "message.count": .stringConvertible(messages.count)])
 
             emit(
@@ -553,7 +614,23 @@ extension LiveAgentCenter {
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
-        let previousRuns = includeHistory ? try await storage.runs(for: agent) : []
+
+        // Load runs only from the current session, not from all sessions
+        let previousRuns: [Run]
+        if includeHistory {
+            if let currentSession = try await storage.getSession(
+                sessionId: session.sessionId,
+                agentId: agent.id,
+                userId: session.userId
+            ) {
+                previousRuns = currentSession.runs
+            } else {
+                previousRuns = []
+            }
+        } else {
+            previousRuns = []
+        }
+
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
 
         emit(
@@ -601,8 +678,39 @@ extension LiveAgentCenter {
                         )
                         entries.append(promptEntry)
                     }
+
                 case .assistant:
-                    if let content = message.content {
+                    // Handle both text responses and tool calls
+                    if let toolCalls = message.toolCalls, !toolCalls.isEmpty {
+                        // Reconstruct assistant message with tool calls
+                        let transcriptCalls = toolCalls.compactMap { tc -> Transcript.ToolCall? in
+                            // Convert stored string arguments back to GeneratedContent
+                            guard let data = tc.arguments.data(using: .utf8),
+                                let decodedContent = try? JSONDecoder().decode(GeneratedContent.self, from: data)
+                            else {
+                                // Fallback: wrap plain string as GeneratedContent
+                                return Transcript.ToolCall(
+                                    id: tc.id,
+                                    toolName: tc.name,
+                                    arguments: GeneratedContent(tc.arguments)
+                                )
+                            }
+                            return Transcript.ToolCall(
+                                id: tc.id,
+                                toolName: tc.name,
+                                arguments: decodedContent
+                            )
+                        }
+                        let toolCallsSegment = Transcript.ToolCallsSegment(calls: transcriptCalls)
+                        let responseEntry = Transcript.Entry.response(
+                            Transcript.Response(
+                                assetIDs: [],
+                                segments: [.toolCalls(toolCallsSegment)]
+                            )
+                        )
+                        entries.append(responseEntry)
+                    } else if let content = message.content {
+                        // Regular text response
                         let responseEntry = Transcript.Entry.response(
                             Transcript.Response(
                                 assetIDs: [],
@@ -611,11 +719,14 @@ extension LiveAgentCenter {
                         )
                         entries.append(responseEntry)
                     }
+
+                case .tool:
+                    // Tool results are handled by AnyLanguageModel internally
+                    // We store them for record-keeping but don't reconstruct them into transcript
+                    break
+
                 case .system:
                     // System messages are handled via instructions
-                    break
-                case .tool:
-                    // TODO: Reconstruct tool call entries if needed
                     break
                 }
             }
@@ -701,18 +812,57 @@ extension LiveAgentCenter {
                 }
 
             case .response(let response):
-                let content = extractTextContent(from: response.segments)
-                if !content.isEmpty {
-                    messages.append(.assistant(content))
+                // Check for tool calls in response segments
+                let toolCalls = extractToolCalls(from: response.segments)
+
+                if !toolCalls.isEmpty {
+                    // Assistant message with tool calls (no text content)
+                    messages.append(.assistantWithTools(toolCalls))
+                } else {
+                    // Regular assistant message with text content
+                    let content = extractTextContent(from: response.segments)
+                    if !content.isEmpty {
+                        messages.append(.assistant(content))
+                    }
                 }
 
             default:
-                // TODO: Extract tool calls if needed
+                // Other entry types not yet supported
                 break
             }
         }
 
         return messages
+    }
+
+    private func extractToolCalls(from segments: [Transcript.Segment]) -> [ToolCall] {
+        var toolCalls: [ToolCall] = []
+
+        for segment in segments {
+            if case .toolCalls(let toolCallsSegment) = segment {
+                for call in toolCallsSegment.calls {
+                    // Convert GeneratedContent to String for storage
+                    let argumentsString: String
+                    if let data = try? JSONEncoder().encode(call.arguments),
+                        let jsonString = String(data: data, encoding: .utf8)
+                    {
+                        argumentsString = jsonString
+                    } else {
+                        // Fallback: use string description
+                        argumentsString = String(describing: call.arguments)
+                    }
+
+                    let toolCall = ToolCall(
+                        id: call.id,
+                        name: call.toolName,
+                        arguments: argumentsString
+                    )
+                    toolCalls.append(toolCall)
+                }
+            }
+        }
+
+        return toolCalls
     }
 
     private func extractTextContent(from segments: [Transcript.Segment]) -> String {
