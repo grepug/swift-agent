@@ -11,6 +11,8 @@ public struct Agent: Sendable, Codable, Hashable {
     package let modelName: String
     package let toolNames: [String]
     package let mcpServerNames: [String]
+    package let preHookNames: [String]
+    package let postHookNames: [String]
     package let instructions: String
 
     public init(
@@ -20,7 +22,9 @@ public struct Agent: Sendable, Codable, Hashable {
         modelName: String,
         instructions: String,
         toolNames: [String] = [],
-        mcpServerNames: [String] = []
+        mcpServerNames: [String] = [],
+        preHookNames: [String] = [],
+        postHookNames: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -29,5 +33,7 @@ public struct Agent: Sendable, Codable, Hashable {
         self.toolNames = toolNames
         self.instructions = instructions
         self.mcpServerNames = mcpServerNames
+        self.preHookNames = preHookNames
+        self.postHookNames = postHookNames
     }
 }
