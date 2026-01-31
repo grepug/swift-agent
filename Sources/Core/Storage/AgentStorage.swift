@@ -74,29 +74,6 @@ public protocol AgentStorage: Sendable {
     /// Remove a run
     func removeRun(runId: UUID, sessionId: UUID) async throws
 
-    // MARK: - Message Management
-
-    /// Append messages to session memory
-    func appendMessages(_ messages: [Message], sessionId: UUID) async throws
-
-    /// Get message history for a session
-    func getMessages(sessionId: UUID, limit: Int?) async throws -> [Message]
-
-    /// Clear messages older than date
-    func clearMessages(sessionId: UUID, olderThan: Date) async throws
-
-    // MARK: - Session Data Management
-
-    /// Update custom session data
-    func updateSessionData(
-        _ data: [String: AnyCodable],
-        sessionId: UUID,
-        merge: Bool
-    ) async throws
-
-    /// Get session data
-    func getSessionData(sessionId: UUID) async throws -> [String: AnyCodable]?
-
     // MARK: - Utilities
 
     /// Get storage statistics

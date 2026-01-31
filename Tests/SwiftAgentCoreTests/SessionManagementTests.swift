@@ -43,7 +43,6 @@ import Testing
     #expect(session.agentId == "test-agent")
     #expect(session.userId == userId)
     #expect(session.name == "Test Session")
-    #expect(session.messages.isEmpty)
     #expect(session.runs.isEmpty)
 }
 

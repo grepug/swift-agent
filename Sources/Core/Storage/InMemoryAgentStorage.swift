@@ -98,62 +98,6 @@ public actor InMemoryAgentStorage: AgentStorage {
         sessions[sessionId] = session
     }
 
-    // MARK: - Message Management
-
-    public func appendMessages(_ messages: [Message], sessionId: UUID) async throws {
-        guard var session = sessions[sessionId] else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        session.messages.append(contentsOf: messages)
-        session.updatedAt = Date()
-        sessions[sessionId] = session
-    }
-
-    public func getMessages(sessionId: UUID, limit: Int? = nil) async throws -> [Message] {
-        guard let session = sessions[sessionId] else { return [] }
-
-        if let limit = limit {
-            return Array(session.messages.suffix(limit))
-        }
-        return session.messages
-    }
-
-    public func clearMessages(sessionId: UUID, olderThan: Date) async throws {
-        guard var session = sessions[sessionId] else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        session.messages.removeAll { $0.createdAt < olderThan }
-        session.updatedAt = Date()
-        sessions[sessionId] = session
-    }
-
-    // MARK: - Session Data Management
-
-    public func updateSessionData(
-        _ data: [String: AnyCodable],
-        sessionId: UUID,
-        merge: Bool = true
-    ) async throws {
-        guard var session = sessions[sessionId] else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        if merge {
-            session.sessionData.merge(data) { _, new in new }
-        } else {
-            session.sessionData = data
-        }
-
-        session.updatedAt = Date()
-        sessions[sessionId] = session
-    }
-
-    public func getSessionData(sessionId: UUID) async throws -> [String: AnyCodable]? {
-        return sessions[sessionId]?.sessionData
-    }
-
     // MARK: - Utilities
 
     public func getStats() async throws -> StorageStats {
@@ -161,7 +105,9 @@ public actor InMemoryAgentStorage: AgentStorage {
 
         let totalSessions = allSessions.count
         let totalRuns = allSessions.reduce(0) { $0 + $1.runs.count }
-        let totalMessages = allSessions.reduce(0) { $0 + $1.messages.count }
+        let totalMessages = allSessions.reduce(0) { total, session in
+            total + session.runs.reduce(0) { $0 + $1.messages.count }
+        }
         let oldestSession = allSessions.map(\.createdAt).min()
         let newestSession = allSessions.map(\.updatedAt).max()
 

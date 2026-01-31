@@ -20,11 +20,7 @@ import Testing
         id: UUID(),
         agentId: "test-agent",
         userId: userId,
-        name: "First Session",
-        messages: [
-            Message(role: .user, content: "Hello"),
-            Message(role: .assistant, content: "Hi there!"),
-        ]
+        name: "First Session"
     )
 
     _ = try await storage.upsertSession(session1)
@@ -101,7 +97,7 @@ import Testing
     let stats = try await storage.getStats()
     #expect(stats.totalSessions == 2)
     #expect(stats.totalRuns == 1)
-    #expect(stats.totalMessages == 2)
+    #expect(stats.totalMessages == 0)  // No messages because run.messages is empty
 }
 
 @Test func testFileAgentStorageSessionOperations() async throws {
@@ -121,33 +117,10 @@ import Testing
     let session = AgentSession(
         id: sessionId,
         agentId: "my-agent",
-        userId: userId,
-        sessionData: ["key1": AnyCodable("\"value1\"")]  // Store as JSON string
+        userId: userId
     )
 
     _ = try await storage.upsertSession(session)
-
-    // Update session data (merge)
-    try await storage.updateSessionData(
-        ["key2": AnyCodable("\"value2\"")],  // Store as JSON string
-        sessionId: sessionId,
-        merge: true
-    )
-
-    let data = try await storage.getSessionData(sessionId: sessionId)
-    #expect(try data?["key1"]?.decode(as: String.self) == "value1")
-    #expect(try data?["key2"]?.decode(as: String.self) == "value2")
-
-    // Update session data (replace)
-    try await storage.updateSessionData(
-        ["key3": AnyCodable("\"value3\"")],  // Store as JSON string
-        sessionId: sessionId,
-        merge: false
-    )
-
-    let newData = try await storage.getSessionData(sessionId: sessionId)
-    #expect(newData?["key1"] == nil)
-    #expect(try newData?["key3"]?.decode(as: String.self) == "value3")
 
     // Rename session
     _ = try await storage.renameSession(sessionId: sessionId, name: "Updated Name")

@@ -7,14 +7,8 @@ public struct AgentSession: Sendable, Codable, Identifiable {
     public let userId: UUID
     public var name: String?
 
-    // Message history (conversation memory)
-    public var messages: [Message]
-
-    // Run history
+    // Run history (contains all messages)
     public var runs: [Run]
-
-    // Custom session data (persists across runs)
-    public var sessionData: [String: AnyCodable]
 
     // Optional summary for long conversations
     public var summary: String?
@@ -31,9 +25,7 @@ public struct AgentSession: Sendable, Codable, Identifiable {
         agentId: String,
         userId: UUID,
         name: String? = nil,
-        messages: [Message] = [],
         runs: [Run] = [],
-        sessionData: [String: AnyCodable] = [:],
         summary: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -43,9 +35,7 @@ public struct AgentSession: Sendable, Codable, Identifiable {
         self.agentId = agentId
         self.userId = userId
         self.name = name
-        self.messages = messages
         self.runs = runs
-        self.sessionData = sessionData
         self.summary = summary
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -71,8 +61,13 @@ extension AgentSession {
         runs.count
     }
 
-    /// Total number of messages in this session
+    /// Total number of messages in this session (across all runs)
     public var messageCount: Int {
-        messages.count
+        runs.reduce(0) { $0 + $1.messages.count }
+    }
+
+    /// Get all messages from all runs in chronological order
+    public var allMessages: [Message] {
+        runs.flatMap { $0.messages }.sorted { $0.createdAt < $1.createdAt }
     }
 }

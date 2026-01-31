@@ -206,68 +206,6 @@ public actor FileAgentStorage: AgentStorage {
         logVerbose("Removed run \(runId) from session \(sessionId)")
     }
 
-    // MARK: - Message Management
-
-    public func appendMessages(_ messages: [Message], sessionId: UUID) async throws {
-        guard var session = try await getSession(sessionId: sessionId) else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        session.messages.append(contentsOf: messages)
-        _ = try await upsertSession(session)
-
-        logVerbose("Appended \(messages.count) messages to session \(sessionId)")
-    }
-
-    public func getMessages(sessionId: UUID, limit: Int? = nil) async throws -> [Message] {
-        guard let session = try await getSession(sessionId: sessionId) else { return [] }
-
-        if let limit = limit {
-            return Array(session.messages.suffix(limit))
-        }
-        return session.messages
-    }
-
-    public func clearMessages(sessionId: UUID, olderThan: Date) async throws {
-        guard var session = try await getSession(sessionId: sessionId) else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        let originalCount = session.messages.count
-        session.messages.removeAll { $0.createdAt < olderThan }
-
-        if session.messages.count != originalCount {
-            _ = try await upsertSession(session)
-            logVerbose("Cleared \(originalCount - session.messages.count) messages from session \(sessionId)")
-        }
-    }
-
-    // MARK: - Session Data Management
-
-    public func updateSessionData(
-        _ data: [String: AnyCodable],
-        sessionId: UUID,
-        merge: Bool = true
-    ) async throws {
-        guard var session = try await getSession(sessionId: sessionId) else {
-            throw StorageError.sessionNotFound(sessionId)
-        }
-
-        if merge {
-            session.sessionData.merge(data) { _, new in new }
-        } else {
-            session.sessionData = data
-        }
-
-        _ = try await upsertSession(session)
-        logVerbose("Updated session data for session \(sessionId)")
-    }
-
-    public func getSessionData(sessionId: UUID) async throws -> [String: AnyCodable]? {
-        guard let session = try await getSession(sessionId: sessionId) else { return nil }
-        return session.sessionData
-    }
-
     // MARK: - Utilities
 
     public func getStats() async throws -> StorageStats {
@@ -282,7 +220,8 @@ public actor FileAgentStorage: AgentStorage {
 
         for session in sessions {
             totalRuns += session.runs.count
-            totalMessages += session.messages.count
+            // Count messages from all runs
+            totalMessages += session.runs.reduce(0) { $0 + $1.messages.count }
 
             if let oldest = oldestDate {
                 oldestDate = min(oldest, session.createdAt)

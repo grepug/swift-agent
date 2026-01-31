@@ -56,7 +56,7 @@ struct Session: AsyncParsableCommand {
             print("✅ Created session: \(session.id.uuidString)")
             print("   Agent ID: \(agentId)")
             print("   User ID: \(userId.uuidString)")
-            print("   Message Count: \(session.messages.count)")
+            print("   Run Count: \(session.runs.count)")
         }
     }
 
