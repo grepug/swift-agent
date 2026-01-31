@@ -394,64 +394,51 @@ struct HooksTests {
         #expect(executionOrder.value == ["hook-1", "hook-2", "hook-3"])
     }
     
-    @Test("Blocking pre-hook can modify user message")
-    func blockingPreHookModifiesMessage() async throws {
-        @Dependency(\.agentCenter) var center
+    @Test("Pre-hook can modify user message via inout parameter")
+    func preHookModifiesMessage() async throws {
+        // Test that pre-hooks can modify the message using inout parameter
+        let originalMessage = "Hello, world!"
+        let transformedMessage = LockIsolated<String?>(nil)
         
-        // Register a blocking pre-hook that modifies the message
-        let preHook = RegisteredPreHook(
+        // Create a hook that modifies the message
+        let hook = RegisteredPreHook(
             name: "message-transformer",
             blocking: true
         ) { context in
-            // Transform the message
             context.userMessage = "[TRANSFORMED] \(context.userMessage)"
+            let modified = context.userMessage
+            transformedMessage.setValue(modified)
         }
         
-        await center.register(preHook: preHook)
-        
-        // Create agent with the hook
+        // Create a mock context
         let agent = Agent(
-            id: "test-agent-7",
-            name: "Test Agent 7",
+            id: "test-agent",
+            name: "Test Agent",
             description: "Test",
-            modelName: "test-model-7",
-            instructions: "Test instructions",
-            preHookNames: ["message-transformer"]
+            modelName: "test-model",
+            instructions: "Test instructions"
         )
         
-        await center.register(agent: agent)
-        
-        let mockModel = createMockModel()
-        await center.register(model: mockModel, named: "test-model-7")
-        
-        // Create session
-        let session = try await center.createSession(
-            agentId: agent.id,
+        let sessionContext = AgentSessionContext(
+            agentId: "test-agent",
             userId: UUID(),
-            name: nil
+            sessionId: UUID()
         )
         
-        let context = AgentSessionContext(
-            agentId: agent.id,
-            userId: session.userId,
-            sessionId: session.id
+        var hookContext = HookContext(
+            agent: agent,
+            session: sessionContext,
+            userMessage: originalMessage,
+            metadata: [:]
         )
         
-        // Run agent with original message
-        let originalMessage = "Hello, world!"
-        let run = try await center.runAgent(
-            session: context,
-            message: originalMessage,
-            as: String.self,
-            loadHistory: false
-        )
+        // Execute the hook
+        try await hook.execute(&hookContext)
         
-        // The run should have messages (even if the model call fails due to invalid API key,
-        // the run structure will be created with the transformed message)
-        // In a real implementation, we'd check that the model received the transformed message
-        // For now, we verify the run was created successfully
-        #expect(run.agentId == agent.id)
-        #expect(run.sessionId == session.id)
+        // Verify the message was modified
+        #expect(hookContext.userMessage == "[TRANSFORMED] Hello, world!")
+        #expect(transformedMessage.value == "[TRANSFORMED] Hello, world!")
+        #expect(hookContext.userMessage != originalMessage)
     }
 }
 
