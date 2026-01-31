@@ -22,7 +22,9 @@ public struct Hook: Sendable, Codable, Hashable {
 
 /// Pre-hook function signature
 /// Executes before agent run with access to the hook context
-public typealias PreHookFunction = @Sendable (HookContext) async throws -> Void
+/// Can modify context.userMessage to transform the input
+/// Note: Only blocking pre-hooks can modify the message (non-blocking hooks receive a copy)
+public typealias PreHookFunction = @Sendable (inout HookContext) async throws -> Void
 
 /// Post-hook function signature  
 /// Executes after agent run with access to context and the generated run

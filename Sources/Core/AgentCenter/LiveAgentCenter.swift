@@ -302,15 +302,18 @@ extension LiveAgentCenter {
 
         do {
             // Build hook context
-            let hookContext = HookContext(
+            var hookContext = HookContext(
                 agent: agent,
                 session: session,
                 userMessage: message,
                 metadata: [:]
             )
 
-            // Execute pre-hooks
-            try await executePreHooks(for: agent, context: hookContext)
+            // Execute pre-hooks (may modify hookContext.userMessage)
+            try await executePreHooks(for: agent, context: &hookContext)
+
+            // Use the potentially modified message
+            let finalMessage = hookContext.userMessage
 
             // Discover MCP servers for this agent
             try await discoverMCPServers(agent.mcpServerNames)
@@ -332,7 +335,7 @@ extension LiveAgentCenter {
             // Track the number of entries before responding to identify new messages
             let entriesBeforeResponse = modelSession.transcript.count
 
-            let response = try await modelSession.respond(to: message, generating: T.self)
+            let response = try await modelSession.respond(to: finalMessage, generating: T.self)
 
             let content: Data?
 
@@ -976,7 +979,10 @@ extension LiveAgentCenter {
     }
 
     /// Execute pre-hooks for an agent
-    private func executePreHooks(for agent: Agent, context: HookContext) async throws {
+    /// - Parameters:
+    ///   - agent: The agent to execute hooks for
+    ///   - context: The hook context (mutable - blocking hooks can modify userMessage)
+    private func executePreHooks(for agent: Agent, context: inout HookContext) async throws {
         let allPreHooks = agent.preHookNames.compactMap { preHooks[$0] }
         guard !allPreHooks.isEmpty else { return }
 
@@ -988,17 +994,19 @@ extension LiveAgentCenter {
             "non-blocking.count": .stringConvertible(nonBlockingHooks.count)
         ])
 
-        // Execute blocking pre-hooks sequentially
+        // Execute blocking pre-hooks sequentially (can modify context)
         for hook in blockingHooks {
             logger.debug("Executing blocking pre-hook", metadata: ["hook.name": .string(hook.config.name)])
-            try await hook.execute(context)
+            try await hook.execute(&context)
         }
 
-        // Launch non-blocking pre-hooks
+        // Launch non-blocking pre-hooks (get a copy, cannot modify)
         for hook in nonBlockingHooks {
             logger.debug("Launching non-blocking pre-hook", metadata: ["hook.name": .string(hook.config.name)])
+            let contextCopy = context  // Non-blocking hooks get a copy
             executeNonBlockingHook(hook, hookName: hook.config.name) { hook in
-                try await hook.execute(context)
+                var mutableContext = contextCopy
+                try await hook.execute(&mutableContext)
             }
         }
     }
