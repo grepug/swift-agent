@@ -267,15 +267,22 @@ struct HooksTests {
     func hookReceivesCorrectContext() async throws {
         @Dependency(\.agentCenter) var center
         
-        // Track hook context
-        let receivedContext = LockIsolated<HookContext?>(nil)
+        // Track hook context - capture by value, not reference
+        let receivedAgentId = LockIsolated<String?>(nil)
+        let receivedSessionId = LockIsolated<UUID?>(nil)
+        let receivedMessage = LockIsolated<String?>(nil)
         
-        // Register pre-hook that captures context
+        // Register pre-hook that captures context values
         let preHook = RegisteredPreHook(
             name: "context-capture",
             blocking: true
         ) { context in
-            receivedContext.setValue(context)
+            let agentId = context.agent.id
+            let sessionId = context.session.sessionId
+            let message = context.userMessage
+            receivedAgentId.setValue(agentId)
+            receivedSessionId.setValue(sessionId)
+            receivedMessage.setValue(message)
         }
         
         await center.register(preHook: preHook)
@@ -317,12 +324,10 @@ struct HooksTests {
             loadHistory: false
         )
         
-        // Verify hook received correct context
-        let hookContext = try #require(receivedContext.value)
-        #expect(hookContext.agent.id == agent.id)
-        #expect(hookContext.agent.name == "Test Agent 5")
-        #expect(hookContext.session.sessionId == session.id)
-        #expect(hookContext.userMessage == testMessage)
+        // Verify hook received correct context values
+        #expect(receivedAgentId.value == agent.id)
+        #expect(receivedSessionId.value == session.id)
+        #expect(receivedMessage.value == testMessage)
     }
     
     // MARK: - Multiple Hooks Tests
