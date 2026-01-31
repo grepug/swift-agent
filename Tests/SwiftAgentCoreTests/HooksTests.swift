@@ -392,7 +392,7 @@ struct HooksTests {
 
 // MARK: - Mock Language Model
 
-import class AnyLanguageModel.OpenAILanguageModel
+import struct AnyLanguageModel.OpenAILanguageModel
 
 private func createMockModel() -> any LanguageModel {
     // Use a real OpenAI model for testing
