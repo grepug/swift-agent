@@ -6,12 +6,12 @@ import Foundation
 public struct Hook: Sendable, Codable, Hashable {
     /// Unique name for the hook
     public let name: String
-    
+
     /// Whether the hook should block agent execution
     /// - true: Wait for hook completion before proceeding (for validation, guardrails)
     /// - false: Fire-and-forget background execution (for logging, analytics)
     public let blocking: Bool
-    
+
     public init(name: String, blocking: Bool = true) {
         self.name = name
         self.blocking = blocking
@@ -26,7 +26,7 @@ public struct Hook: Sendable, Codable, Hashable {
 /// Note: Only blocking pre-hooks can modify the message (non-blocking hooks receive a copy)
 public typealias PreHookFunction = @Sendable (inout HookContext) async throws -> Void
 
-/// Post-hook function signature  
+/// Post-hook function signature
 /// Executes after agent run with access to context and the generated run
 public typealias PostHookFunction = @Sendable (HookContext, Run) async throws -> Void
 
@@ -36,15 +36,15 @@ public typealias PostHookFunction = @Sendable (HookContext, Run) async throws ->
 public struct RegisteredPreHook: Sendable {
     /// Hook configuration
     public let config: Hook
-    
+
     /// Executable function
     public let execute: PreHookFunction
-    
+
     public init(config: Hook, execute: @escaping PreHookFunction) {
         self.config = config
         self.execute = execute
     }
-    
+
     /// Convenience initializer with name and blocking flag
     public init(
         name: String,
@@ -60,15 +60,15 @@ public struct RegisteredPreHook: Sendable {
 public struct RegisteredPostHook: Sendable {
     /// Hook configuration
     public let config: Hook
-    
+
     /// Executable function
     public let execute: PostHookFunction
-    
+
     public init(config: Hook, execute: @escaping PostHookFunction) {
         self.config = config
         self.execute = execute
     }
-    
+
     /// Convenience initializer with name and blocking flag
     public init(
         name: String,

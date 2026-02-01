@@ -943,10 +943,12 @@ extension LiveAgentCenter {
             do {
                 try await execute(hook)
             } catch {
-                logger.warning("Non-blocking hook failed", metadata: [
-                    "hook.name": .string(hookName),
-                    "error": .string(String(describing: error))
-                ])
+                logger.warning(
+                    "Non-blocking hook failed",
+                    metadata: [
+                        "hook.name": .string(hookName),
+                        "error": .string(String(describing: error)),
+                    ])
             }
             await self.removeBackgroundTask(taskId)
         }
@@ -989,10 +991,12 @@ extension LiveAgentCenter {
         let blockingHooks = allPreHooks.filter { $0.config.blocking }
         let nonBlockingHooks = allPreHooks.filter { !$0.config.blocking }
 
-        logger.debug("Executing pre-hooks", metadata: [
-            "blocking.count": .stringConvertible(blockingHooks.count),
-            "non-blocking.count": .stringConvertible(nonBlockingHooks.count)
-        ])
+        logger.debug(
+            "Executing pre-hooks",
+            metadata: [
+                "blocking.count": .stringConvertible(blockingHooks.count),
+                "non-blocking.count": .stringConvertible(nonBlockingHooks.count),
+            ])
 
         // Execute blocking pre-hooks sequentially (can modify context)
         for hook in blockingHooks {
@@ -1019,10 +1023,12 @@ extension LiveAgentCenter {
         let blockingHooks = allPostHooks.filter { $0.config.blocking }
         let nonBlockingHooks = allPostHooks.filter { !$0.config.blocking }
 
-        logger.debug("Executing post-hooks", metadata: [
-            "blocking.count": .stringConvertible(blockingHooks.count),
-            "non-blocking.count": .stringConvertible(nonBlockingHooks.count)
-        ])
+        logger.debug(
+            "Executing post-hooks",
+            metadata: [
+                "blocking.count": .stringConvertible(blockingHooks.count),
+                "non-blocking.count": .stringConvertible(nonBlockingHooks.count),
+            ])
 
         // Execute blocking post-hooks sequentially
         for hook in blockingHooks {
@@ -1031,10 +1037,12 @@ extension LiveAgentCenter {
                 try await hook.execute(context, run)
             } catch {
                 // Log error but don't propagate - post-hooks shouldn't fail the run
-                logger.warning("Blocking post-hook failed", metadata: [
-                    "hook.name": .string(hook.config.name),
-                    "error": .string(String(describing: error))
-                ])
+                logger.warning(
+                    "Blocking post-hook failed",
+                    metadata: [
+                        "hook.name": .string(hook.config.name),
+                        "error": .string(String(describing: error)),
+                    ])
             }
         }
 
