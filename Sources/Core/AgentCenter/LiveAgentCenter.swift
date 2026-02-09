@@ -326,7 +326,7 @@ extension LiveAgentCenter {
             )
 
             // Create session with conversation history
-            let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
+            let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
             // Use AnyLanguageModel's session to handle the conversation
             // Individual API calls will be tracked via handleModelEvent()
@@ -433,6 +433,25 @@ extension LiveAgentCenter {
                         throw AgentError.agentNotFound(session.agentId)
                     }
 
+                    emit(
+                        .agentExecutionStarted(
+                            agent: agent,
+                            session: session,
+                            timestamp: Date()
+                        ))
+
+                    // Build hook context
+                    var hookContext = HookContext(
+                        agent: agent,
+                        session: session,
+                        userMessage: message,
+                        metadata: [:]
+                    )
+
+                    // Execute pre-hooks (may modify hookContext.userMessage)
+                    try await executePreHooks(for: agent, context: &hookContext)
+                    let finalMessage = hookContext.userMessage
+
                     // Discover MCP servers for this agent
                     try await discoverMCPServers(agent.mcpServerNames)
 
@@ -444,19 +463,90 @@ extension LiveAgentCenter {
                     )
 
                     // Create session with history
-                    let modelSession = await createSession(for: agent, sessionId: session.sessionId, with: transcript)
+                    let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
 
-                    // Use respond() which handles tool calls automatically
                     logger.debug("Sending stream message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
-                    let response = try await modelSession.respond { Prompt(message) }
 
-                    // The response content is already a String
-                    logger.debug("Stream response received", metadata: ["agent.id": .string(session.agentId)])
-                    continuation.yield(String(describing: response.content))
+                    // Track entries before the stream to extract only new messages from this turn.
+                    let entriesBeforeResponse = modelSession.transcript.count
+
+                    let stream = modelSession.streamResponse(to: finalMessage)
+                    var previousCumulative = ""
+
+                    for try await snapshot in stream {
+                        let cumulative: String
+                        if case .string(let value) = snapshot.rawContent.kind {
+                            cumulative = value
+                        } else {
+                            cumulative = snapshot.rawContent.jsonString
+                        }
+
+                        let delta: String
+                        if cumulative.hasPrefix(previousCumulative) {
+                            delta = String(cumulative.dropFirst(previousCumulative.count))
+                        } else {
+                            delta = cumulative
+                        }
+                        previousCumulative = cumulative
+
+                        if !delta.isEmpty {
+                            continuation.yield(delta)
+                        }
+                    }
+
+                    // Build run from new transcript entries, same as runAgent.
+                    let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
+                    let messages = extractMessages(from: Transcript(entries: newEntries))
+
+                    let run = Run(
+                        agentId: session.agentId,
+                        sessionId: session.sessionId,
+                        userId: session.userId,
+                        messages: messages,
+                        rawContent: previousCumulative.data(using: .utf8),
+                    )
+
+                    @Dependency(\.storage) var storage
+                    guard
+                        try await storage.getSession(
+                            sessionId: session.sessionId,
+                            agentId: session.agentId,
+                            userId: session.userId
+                        ) != nil
+                    else {
+                        throw AgentError.sessionNotFound(session.sessionId)
+                    }
+
+                    try await storage.appendRun(run, sessionId: session.sessionId)
+
+                    emit(
+                        .runSaved(
+                            runId: run.id,
+                            agentId: agent.id,
+                            messageCount: messages.count,
+                            timestamp: Date()
+                        ))
+
+                    emit(
+                        .agentExecutionCompleted(
+                            run: run,
+                            timestamp: Date()
+                        ))
+
+                    // Execute post-hooks after stream run is saved.
+                    await executePostHooks(for: agent, context: hookContext, run: run)
 
                     continuation.finish()
                     logger.info("Agent stream completed successfully", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString)])
+                } catch is CancellationError {
+                    continuation.finish()
                 } catch {
+                    emit(
+                        .agentExecutionFailed(
+                            session: session,
+                            error: error,
+                            timestamp: Date()
+                        ))
                     logger.error("Agent stream failed", metadata: ["agent.id": .string(session.agentId), "error": .string(String(describing: error))])
                     continuation.finish(throwing: error)
                 }
@@ -771,11 +861,11 @@ extension LiveAgentCenter {
         for agent: Agent,
         sessionId: UUID,
         with transcript: Transcript
-    ) async -> LanguageModelSession {
+    ) async throws -> LanguageModelSession {
         logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName)])
         guard let model = models[agent.modelName] else {
             logger.error("Model not found", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName)])
-            fatalError("Model '\(agent.modelName)' not registered in AgentCenter")
+            throw AgentError.modelNotFound(agent.modelName)
         }
 
         let sessionTools = await tools(for: agent)
@@ -950,7 +1040,7 @@ extension LiveAgentCenter {
                         "error": .string(String(describing: error)),
                     ])
             }
-            await self.removeBackgroundTask(taskId)
+            self.removeBackgroundTask(taskId)
         }
         backgroundHookTasks[taskId] = task
     }

@@ -8,12 +8,12 @@ public struct Agent: Sendable, Codable, Hashable {
     public let name: String
     public let description: String
 
-    package let modelName: String
-    package let toolNames: [String]
-    package let mcpServerNames: [String]
-    package let preHookNames: [String]
-    package let postHookNames: [String]
-    package let instructions: String
+    public let modelName: String
+    public let toolNames: [String]
+    public let mcpServerNames: [String]
+    public let preHookNames: [String]
+    public let postHookNames: [String]
+    public let instructions: String
 
     public init(
         id: String,
@@ -35,5 +35,28 @@ public struct Agent: Sendable, Codable, Hashable {
         self.mcpServerNames = mcpServerNames
         self.preHookNames = preHookNames
         self.postHookNames = postHookNames
+    }
+
+    public init(
+        name: String,
+        description: String,
+        modelName: String,
+        instructions: String,
+        toolNames: [String] = [],
+        mcpServerNames: [String] = [],
+        preHookNames: [String] = [],
+        postHookNames: [String] = []
+    ) {
+        self.init(
+            id: UUID().uuidString,
+            name: name,
+            description: description,
+            modelName: modelName,
+            instructions: instructions,
+            toolNames: toolNames,
+            mcpServerNames: mcpServerNames,
+            preHookNames: preHookNames,
+            postHookNames: postHookNames
+        )
     }
 }

@@ -148,10 +148,14 @@ extension Run {
             throw RunError.noData
         }
 
-        return String(data: data, encoding: .utf8)!
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw RunError.invalidUTF8Data
+        }
+        return text
     }
 }
 
 public enum RunError: Error {
     case noData
+    case invalidUTF8Data
 }
