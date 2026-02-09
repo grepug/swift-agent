@@ -26,7 +26,7 @@ let package = Package(
     ],
     dependencies: [
         // .package(url: "https://github.com/grepug/AnyLanguageModel.git", branch: "main"),
-        .package(path: "/Users/kai/Developer/ai/AnyLanguageModel"),
+        .package(path: "Vendor/AnyLanguageModel"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.9.1"),
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.0.0"),
