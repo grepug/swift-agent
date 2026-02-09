@@ -42,20 +42,27 @@ struct Session: AsyncParsableCommand {
 
         func runWithDependencies() async throws {
             @Dependency(\.agentCenter) var center
-            @Dependency(\.storage) var storage
             @Dependency(\.userId) var defaultUserId
 
-            let userId = userId.map { UUID(uuidString: $0)! } ?? defaultUserId
+            let parsedUserId: UUID
+            if let userId {
+                guard let uuid = UUID(uuidString: userId) else {
+                    throw ValidationError("Invalid UUID format: \(userId)")
+                }
+                parsedUserId = uuid
+            } else {
+                parsedUserId = defaultUserId
+            }
 
             let session = try await center.createSession(
                 agentId: agentId,
-                userId: userId,
+                userId: parsedUserId,
                 name: name
             )
 
             print("✅ Created session: \(session.id.uuidString)")
             print("   Agent ID: \(agentId)")
-            print("   User ID: \(userId.uuidString)")
+            print("   User ID: \(parsedUserId.uuidString)")
             print("   Run Count: \(session.runs.count)")
         }
     }

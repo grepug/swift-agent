@@ -99,6 +99,45 @@ public protocol AgentCenter: Sendable {
 
 // MARK: - Dependency
 
+public extension AgentCenter {
+    func runAgent<T: Codable & Generable>(
+        session: AgentSessionContext,
+        message: String,
+        as type: T.Type
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: type,
+            loadHistory: true
+        )
+    }
+
+    func runAgent(
+        session: AgentSessionContext,
+        message: String,
+        loadHistory: Bool = true
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: String.self,
+            loadHistory: loadHistory
+        )
+    }
+
+    func streamAgent(
+        session: AgentSessionContext,
+        message: String
+    ) async -> AsyncThrowingStream<String, Error> {
+        await streamAgent(
+            session: session,
+            message: message,
+            loadHistory: true
+        )
+    }
+}
+
 extension DependencyValues {
     public var agentCenter: AgentCenter {
         get { self[AgentCenterKey.self] }

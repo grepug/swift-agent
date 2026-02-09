@@ -1,147 +1,98 @@
-# Swift Agent - Minimal Implementation
+# Swift Agent
 
-A minimal, Agno-inspired agent framework in Swift that implements the core agent-model-tool execution loop.
+A Swift-native agent runtime focused on model-tool orchestration, MCP integration, session persistence, and hookable execution.
 
-## Architecture
+## What it provides
 
-Inspired by [Agno](https://agno.com), this implementation provides:
+- `AgentCenter` actor runtime (`LiveAgentCenter`) for:
+  - registering agents, models, tools, MCP server configs, and hooks
+  - creating sessions
+  - running agents (structured output or plain text)
+  - streaming responses
+- Session/run persistence via `AgentStorage`:
+  - `InMemoryAgentStorage`
+  - `FileAgentStorage`
+- Hook system:
+  - pre-hooks (input validation/transformation)
+  - post-hooks (analytics/side effects)
+  - blocking and non-blocking modes
+- Event observer system for runtime telemetry
 
-### Core Components
+## Package layout
 
-#### 1. **Agent** ([Agent.swift](Sources/SwiftAgentCore/Agent.swift))
+- Core library: `Sources/Core`
+- CLI app: `Sources/CLI`
+- Example app: `Sources/Example`
+- Tests: `Tests/SwiftAgentCoreTests`
 
-The central orchestrator that manages:
-
-- System instructions
-- Model interactions
-- Tool execution
-- Conversation storage
-- The agent-model-tool loop
-
-#### 2. **Model Protocol** ([Model.swift](Sources/SwiftAgentCore/Model.swift))
-
-Abstract interface for language models:
-
-```swift
-protocol ModelProtocol: Sendable {
-    func generate(messages: [Message]) async throws -> ModelResponse
-}
-```
-
-#### 3. **Tool System**
-
-- **ToolProtocol** ([ToolProtocol.swift](Sources/SwiftAgentCore/Tool/ToolProtocol.swift)): Interface for executable tools
-- **ToolCall** ([ToolCall.swift](Sources/SwiftAgentCore/Tool/ToolCall.swift)): Represents tool invocations and results
-
-#### 4. **Message System** ([Message.swift](Sources/SwiftAgentCore/Agent/Message.swift))
-
-Conversation representation with roles:
-
-- `system`: Instructions
-- `user`: User input
-- `assistant`: Model responses
-- `tool`: Tool execution results
-
-#### 5. **Storage** ([StorageProtocol.swift](Sources/SwiftAgentCore/Storage/StorageProtocol.swift))
-
-Persistence layer for:
-
-- Run history
-- Session state
-- Includes `InMemoryStorage` implementation
-
-## Execution Flow
-
-```
-1. Agent receives user message
-2. Builds context (system instructions + history + user message)
-3. Sends to model
-4. Model responds with either:
-   a. Tool calls → Execute tools → Go to step 3
-   b. Final message → Return to caller
-5. Save run to storage
-```
-
-## Usage
-
-### Basic Programmatic Usage
+## Quick start
 
 ```swift
-import SwiftAgentCore
 import AnyLanguageModel
+import SwiftAgentCore
 
-// 1. Set up the agent center
-@Dependency(\.agentCenter) var agentCenter
+let center = LiveAgentCenter()
 
-// 2. Register models
-await agentCenter.register(model: myOpenAIModel, named: "gpt-4")
-await agentCenter.register(model: myClaudeModel, named: "claude-3-sonnet")
+// Register a model
+await center.register(model: myModel, named: "gpt-4")
 
-// 3. Register native Swift tools (optional)
-await agentCenter.register(tool: SearchTool())
-await agentCenter.register(tool: FileReaderTool())
-
-// 4. Create and register an agent
+// Register an agent (ID auto-generated)
 let agent = Agent(
     name: "CodeReviewer",
     description: "Reviews code and suggests improvements",
     modelName: "gpt-4",
-    instructions: "You are an expert code reviewer.",
-    toolNames: ["search-tool"],
-    mcpServerNames: ["filesystem"]
+    instructions: "You are an expert code reviewer."
 )
-await agentCenter.register(agent: agent)
+await center.register(agent: agent)
 
-// 5. Run the agent
-let session = AgentSessionContext(
+// Create session
+let session = try await center.createSession(
     agentId: agent.id,
-    userId: UUID()
+    userId: UUID(),
+    name: "Review Session"
 )
-let run = try await agentCenter.runAgent(
-    session: session,
-    message: "Review this Swift code...",
-    as: String.self,
-    loadHistory: true
+
+let context = AgentSessionContext(
+    agentId: agent.id,
+    userId: session.userId,
+    sessionId: session.id
 )
+
+// Run as String (convenience overload)
+let run = try await center.runAgent(
+    session: context,
+    message: "Review this Swift snippet"
+)
+
+print(try run.asString())
 ```
 
-### Loading from Configuration
-
-You can load models, agents, and MCP servers from a configuration object. Models defined in the config will be automatically registered as OpenAI-compatible language models.
-
-#### Option 1: Load from JSON File
+## Structured output
 
 ```swift
-import SwiftAgentCore
-import AnyLanguageModel
+@Generable
+struct ReviewSummary: Codable {
+    @Guide(description: "Overall score 1-10", .range(1...10))
+    var score: Int
 
-// 1. Create the agent center
-let agentCenter = LiveAgentCenter()
+    @Guide(description: "Short summary")
+    var summary: String
+}
 
-// 2. Optionally register native Swift tools (if any are referenced in the config)
-await agentCenter.register(tool: SearchTool())
-await agentCenter.register(tool: FileReaderTool())
+let run = try await center.runAgent(
+    session: context,
+    message: "Review this pull request",
+    as: ReviewSummary.self
+)
 
-// 3. Load configuration from JSON file (includes models, agents, and MCP servers)
-let configURL = URL(fileURLWithPath: "agent-config.json")
-let data = try Data(contentsOf: configURL)
-let config = try JSONDecoder().decode(AgentConfiguration.self, from: data)
-try await agentCenter.load(configuration: config)
-
-// 4. Use the agents defined in the config
-let agent = await agentCenter.agent(id: myAgentId)
+let summary = try run.decoded(as: ReviewSummary.self)
 ```
 
-#### Option 2: Hardcode Configuration
+## Configuration loading
+
+You can load model/agent/MCP definitions from `AgentConfiguration`:
 
 ```swift
-import SwiftAgentCore
-import AnyLanguageModel
-
-// 1. Create the agent center
-let agentCenter = LiveAgentCenter()
-
-// 2. Create configuration programmatically
 let config = AgentConfiguration(
     models: [
         AgentModel(
@@ -153,129 +104,52 @@ let config = AgentConfiguration(
     ],
     agents: [
         Agent(
-            name: "CodeReviewer",
+            id: "code-reviewer",
+            name: "Code Reviewer",
             description: "Reviews code",
             modelName: "gpt-4",
-            instructions: "You are an expert code reviewer.",
-            toolNames: [],
-            mcpServerNames: ["filesystem"]
+            instructions: "Be concise and precise."
         )
     ],
-    mcpServers: [
-        MCPServerConfiguration(
-            name: "filesystem",
-            transport: .stdio(
-                command: "npx",
-                arguments: ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
-                env: [:]
-            )
-        )
-    ]
+    mcpServers: []
 )
 
-// 3. Load the configuration
-try await agentCenter.load(configuration: config)
+try await center.load(configuration: config)
 ```
 
-**Example Configuration File** (`agent-config.json`):
+## Hooks
 
-```json
-{
-  "models": [
-    {
-      "name": "gpt-4",
-      "baseURL": "https://api.openai.com/v1",
-      "id": "gpt-4",
-      "apiKey": "sk-your-api-key-here"
+Register hooks and reference them by name from an agent:
+
+```swift
+let pre = RegisteredPreHook(name: "validate", blocking: true) { context in
+    guard !context.userMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw NSError(domain: "Validation", code: 1)
     }
-  ],
-  "agents": [
-    {
-      "id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "CodeReviewer",
-      "description": "Reviews code and suggests improvements",
-      "modelName": "gpt-4",
-      "instructions": "You are an expert code reviewer.",
-      "toolNames": ["search-tool"],
-      "mcpServerNames": ["filesystem"]
-    }
-  ],
-  "mcpServers": [
-    {
-      "name": "filesystem",
-      "transport": {
-        "type": "stdio",
-        "command": "npx",
-        "arguments": [
-          "-y",
-          "@modelcontextprotocol/server-filesystem",
-          "/path/to/dir"
-        ],
-        "env": {}
-      }
-    }
-  ]
+}
+
+await center.register(preHook: pre)
+```
+
+## Streaming
+
+```swift
+let stream = await center.streamAgent(session: context, message: "Explain actors in Swift")
+for try await chunk in stream {
+    print(chunk)
 }
 ```
 
-## File Structure
-
-```
-Sources/
-├── SwiftAgentCore/
-│   ├── Agent.swift           # Main agent logic
-│   ├── Model.swift           # Model protocol
-│   ├── AnyCodable.swift      # Type-erased codable helper
-│   ├── Mocks.swift           # Mock implementations
-│   ├── Agent/
-│   │   ├── Message.swift     # Message types
-│   │   ├── Run.swift         # Run results
-│   │   ├── Session.swift     # Session metadata
-│   │   └── ModelResponse.swift
-│   ├── Tool/
-│   │   ├── ToolProtocol.swift
-│   │   └── ToolCall.swift
-│   └── Storage/
-│       └── StorageProtocol.swift
-└── Example/
-    └── main.swift            # Demo application
-```
-
-## Running the Example
+## Running
 
 ```bash
 swift run swift-agent-example
+swift run swift-agent-cli --help
+swift test
 ```
 
-## Next Steps
+## Notes
 
-To make this production-ready:
-
-1. **Integrate Real LLM Provider**
-   - Implement `ModelProtocol` for OpenAI, Anthropic, or local models
-   - Add API key management
-   - Handle streaming responses
-
-2. **Add Persistent Storage**
-   - Implement `StorageProtocol` with SQLite, PostgreSQL, or file-based storage
-   - Add conversation history loading
-
-3. **Enhanced Tool System**
-   - JSON schema validation
-   - Tool discovery and registration
-   - Parallel tool execution
-
-4. **Error Handling**
-   - Retry logic for API failures
-   - Graceful degradation
-   - Better error messages
-
-5. **Advanced Features**
-   - Streaming responses
-   - Structured output (Pydantic-style)
-   - Memory systems
-   - Multi-agent coordination
-
-## License
-
-MIT
+- `Run.asString()` throws if payload data is not valid UTF-8.
+- Missing model registrations now fail with `AgentError.modelNotFound` instead of crashing.
+- API keys are plain strings in `AgentModel`; prefer environment/secret management for production.
