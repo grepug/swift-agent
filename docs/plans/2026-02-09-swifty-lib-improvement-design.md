@@ -49,3 +49,11 @@ Success criteria:
 
 ## Immediate Next Step
 Implement Phase 1 in `LiveAgentCenter` and `Run` with new tests in `SwiftAgentCoreTests`.
+
+## Update (2026-02-09)
+- Phase 1 and Phase 2 were merged.
+- Phase 3 started with `AgentRunOptions`:
+  - per-run `GenerationOptions`,
+  - tool allowlist/blocklist controls,
+  - run/stream API parity for these controls,
+  - validation for unknown allowed tools.

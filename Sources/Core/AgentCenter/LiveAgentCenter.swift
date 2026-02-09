@@ -282,6 +282,7 @@ extension LiveAgentCenter {
         session: AgentSessionContext,
         message: String,
         as type: T.Type,
+        options: AgentRunOptions,
         loadHistory: Bool = true
     ) async throws -> Run {
         logger.info("Running agent", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
@@ -322,11 +323,17 @@ extension LiveAgentCenter {
             let transcript = try await loadTranscript(
                 for: agent,
                 session: session,
-                includeHistory: loadHistory
+                includeHistory: loadHistory,
+                runOptions: options
             )
 
             // Create session with conversation history
-            let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
+            let modelSession = try await createSession(
+                for: agent,
+                sessionId: session.sessionId,
+                with: transcript,
+                runOptions: options
+            )
 
             // Use AnyLanguageModel's session to handle the conversation
             // Individual API calls will be tracked via handleModelEvent()
@@ -335,7 +342,11 @@ extension LiveAgentCenter {
             // Track the number of entries before responding to identify new messages
             let entriesBeforeResponse = modelSession.transcript.count
 
-            let response = try await modelSession.respond(to: finalMessage, generating: T.self)
+            let response = try await modelSession.respond(
+                to: finalMessage,
+                generating: T.self,
+                options: options.generationOptions
+            )
 
             let content: Data?
 
@@ -418,6 +429,7 @@ extension LiveAgentCenter {
     func streamAgent(
         session: AgentSessionContext,
         message: String,
+        options: AgentRunOptions,
         loadHistory: Bool = true
     ) async -> AsyncThrowingStream<String, Error> {
         let agentLogger = logger  // Capture logger for use in closure
@@ -459,18 +471,27 @@ extension LiveAgentCenter {
                     let transcript = try await self.loadTranscript(
                         for: agent,
                         session: session,
-                        includeHistory: loadHistory
+                        includeHistory: loadHistory,
+                        runOptions: options
                     )
 
                     // Create session with history
-                    let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
+                    let modelSession = try await createSession(
+                        for: agent,
+                        sessionId: session.sessionId,
+                        with: transcript,
+                        runOptions: options
+                    )
 
                     logger.debug("Sending stream message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
 
                     // Track entries before the stream to extract only new messages from this turn.
                     let entriesBeforeResponse = modelSession.transcript.count
 
-                    let stream = modelSession.streamResponse(to: finalMessage)
+                    let stream = modelSession.streamResponse(
+                        to: finalMessage,
+                        options: options.generationOptions
+                    )
                     var previousCumulative = ""
 
                     for try await snapshot in stream {
@@ -697,18 +718,36 @@ extension LiveAgentCenter {
 // MARK: - Transcript & Session Management
 
 extension LiveAgentCenter {
-    private func tools(for agent: Agent) async -> [any Tool] {
+    private func tools(
+        for agent: Agent,
+        runOptions: AgentRunOptions = AgentRunOptions()
+    ) async throws -> [any Tool] {
         var result: [any Tool] = []
-        var allToolNames = Set(agent.toolNames)
+        var selectedToolNames = Set(agent.toolNames)
 
         // Add tools from agent's configured MCP servers
         for serverName in agent.mcpServerNames {
             if let serverTools = mcpServerTools[serverName] {
-                allToolNames.formUnion(serverTools)
+                selectedToolNames.formUnion(serverTools)
             }
         }
 
-        for toolName in allToolNames {
+        if let allowlist = runOptions.allowedToolNames {
+            let allowlistSet = Set(allowlist)
+            let unknownAllowedTools = allowlistSet.subtracting(selectedToolNames)
+            if !unknownAllowedTools.isEmpty {
+                throw AgentError.invalidRunOptions(
+                    "Agent '\(agent.id)' does not expose allowed tools: \(unknownAllowedTools.sorted().joined(separator: ", "))"
+                )
+            }
+            selectedToolNames = selectedToolNames.intersection(allowlistSet)
+        }
+
+        if !runOptions.blockedToolNames.isEmpty {
+            selectedToolNames.subtract(runOptions.blockedToolNames)
+        }
+
+        for toolName in selectedToolNames.sorted() {
             if let tool = tools[toolName] {
                 result.append(tool)
             } else {
@@ -722,7 +761,8 @@ extension LiveAgentCenter {
     private func loadTranscript(
         for agent: Agent,
         session: AgentSessionContext,
-        includeHistory: Bool
+        includeHistory: Bool,
+        runOptions: AgentRunOptions
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
@@ -754,19 +794,21 @@ extension LiveAgentCenter {
 
         return try await buildTranscript(
             from: previousRuns,
-            for: agent
+            for: agent,
+            runOptions: runOptions
         )
     }
 
     private func buildTranscript(
         from runs: [Run],
-        for agent: Agent
+        for agent: Agent,
+        runOptions: AgentRunOptions
     ) async throws -> Transcript {
         logger.debug("Building transcript from runs", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(runs.count)])
         var entries: [Transcript.Entry] = []
 
         // Add instructions
-        let toolDefs = await tools(for: agent).map { Transcript.ToolDefinition(tool: $0) }
+        let toolDefs = try await tools(for: agent, runOptions: runOptions).map { Transcript.ToolDefinition(tool: $0) }
         let instructionsEntry = Transcript.Entry.instructions(
             Transcript.Instructions(
                 segments: [.text(.init(content: agent.instructions))],
@@ -860,7 +902,8 @@ extension LiveAgentCenter {
     private func createSession(
         for agent: Agent,
         sessionId: UUID,
-        with transcript: Transcript
+        with transcript: Transcript,
+        runOptions: AgentRunOptions
     ) async throws -> LanguageModelSession {
         logger.debug("Creating language model session", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName)])
         guard let model = models[agent.modelName] else {
@@ -868,7 +911,7 @@ extension LiveAgentCenter {
             throw AgentError.modelNotFound(agent.modelName)
         }
 
-        let sessionTools = await tools(for: agent)
+        let sessionTools = try await tools(for: agent, runOptions: runOptions)
         logger.debug(
             "Language model session created", metadata: ["agent.id": .string(agent.id), "model.name": .string(agent.modelName), "tool.count": .stringConvertible(sessionTools.count)])
 

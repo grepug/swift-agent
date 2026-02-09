@@ -140,6 +140,27 @@ for try await chunk in stream {
 }
 ```
 
+## Per-run execution controls
+
+Use `AgentRunOptions` to override generation behavior and active tools for a single invocation:
+
+```swift
+let options = AgentRunOptions(
+    generationOptions: GenerationOptions(
+        temperature: 0.2,
+        maximumResponseTokens: 300
+    ),
+    allowedToolNames: ["searchDocs"],
+    blockedToolNames: ["deleteFile"]
+)
+
+let run = try await center.runAgent(
+    session: context,
+    message: "Summarize the latest API changes",
+    options: options
+)
+```
+
 ## Running
 
 ```bash

@@ -6,6 +6,7 @@ public enum AgentError: Error, CustomStringConvertible {
     case modelNotFound(String)
     case noResponseFromModel
     case invalidConfiguration(String)
+    case invalidRunOptions(String)
     case invalidJSONResponse
     case sessionNotFound(UUID)
 
@@ -19,6 +20,8 @@ public enum AgentError: Error, CustomStringConvertible {
             return "No response received from model"
         case .invalidConfiguration(let message):
             return "Invalid configuration: \(message)"
+        case .invalidRunOptions(let message):
+            return "Invalid run options: \(message)"
         case .invalidJSONResponse:
             return "Could not parse JSON from model response"
         case .sessionNotFound(let id):

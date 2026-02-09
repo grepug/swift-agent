@@ -22,12 +22,14 @@ public protocol AgentCenter: Sendable {
         session: AgentSessionContext,
         message: String,
         as type: T.Type,
+        options: AgentRunOptions,
         loadHistory: Bool
     ) async throws -> Run
 
     func streamAgent(
         session: AgentSessionContext,
         message: String,
+        options: AgentRunOptions,
         loadHistory: Bool
     ) async -> AsyncThrowingStream<String, Error>
 
@@ -109,7 +111,53 @@ public extension AgentCenter {
             session: session,
             message: message,
             as: type,
+            options: AgentRunOptions(),
             loadHistory: true
+        )
+    }
+
+    func runAgent<T: Codable & Generable>(
+        session: AgentSessionContext,
+        message: String,
+        as type: T.Type,
+        options: AgentRunOptions
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: type,
+            options: options,
+            loadHistory: true
+        )
+    }
+
+    func runAgent<T: Codable & Generable>(
+        session: AgentSessionContext,
+        message: String,
+        as type: T.Type,
+        loadHistory: Bool
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: type,
+            options: AgentRunOptions(),
+            loadHistory: loadHistory
+        )
+    }
+
+    func runAgent(
+        session: AgentSessionContext,
+        message: String,
+        options: AgentRunOptions,
+        loadHistory: Bool = true
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: String.self,
+            options: options,
+            loadHistory: loadHistory
         )
     }
 
@@ -122,6 +170,7 @@ public extension AgentCenter {
             session: session,
             message: message,
             as: String.self,
+            options: AgentRunOptions(),
             loadHistory: loadHistory
         )
     }
@@ -133,6 +182,33 @@ public extension AgentCenter {
         await streamAgent(
             session: session,
             message: message,
+            options: AgentRunOptions(),
+            loadHistory: true
+        )
+    }
+
+    func streamAgent(
+        session: AgentSessionContext,
+        message: String,
+        loadHistory: Bool
+    ) async -> AsyncThrowingStream<String, Error> {
+        await streamAgent(
+            session: session,
+            message: message,
+            options: AgentRunOptions(),
+            loadHistory: loadHistory
+        )
+    }
+
+    func streamAgent(
+        session: AgentSessionContext,
+        message: String,
+        options: AgentRunOptions
+    ) async -> AsyncThrowingStream<String, Error> {
+        await streamAgent(
+            session: session,
+            message: message,
+            options: options,
             loadHistory: true
         )
     }
