@@ -447,11 +447,58 @@ struct HooksTests {
 // MARK: - Mock Language Model
 
 private func createMockModel() -> any LanguageModel {
-    // Use a real OpenAI model for testing
-    // In a real test environment, you'd use environment variables
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [HookTestURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+
     return OpenAILanguageModel(
-        baseURL: URL(string: "https://api.openai.com/v1")!,
-        apiKey: "test-key",  // This will fail but that's ok for structure testing
-        model: "gpt-4"
+        baseURL: URL(string: "https://mock.local/v1")!,
+        apiKey: "test-key",
+        model: "gpt-4",
+        session: session
     )
+}
+
+private final class HookTestURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let responseBody = """
+            {
+              "id": "chatcmpl-hook-test",
+              "object": "chat.completion",
+              "created": 1730000000,
+              "model": "gpt-4",
+              "choices": [
+                {
+                  "index": 0,
+                  "message": {
+                    "role": "assistant",
+                    "content": "Mock response for hook tests"
+                  },
+                  "finish_reason": "stop"
+                }
+              ],
+              "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+              }
+            }
+            """
+
+        let data = Data(responseBody.utf8)
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://mock.local/v1/chat/completions")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
