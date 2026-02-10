@@ -149,7 +149,10 @@ let policy = ExecutionPolicy(
     timeout: 10,
     retries: 1,
     propagateCancellation: true,
-    maxToolCalls: 4
+    maxToolCalls: 4,
+    maxHistoryMessages: 40,
+    maxHistoryTokens: 4_000,
+    summaryHookName: "session-summary"
 )
 
 let run = try await center.runAgent(
@@ -163,6 +166,13 @@ let stream = await center.streamAgent(
     message: "Explain actors in Swift",
     executionPolicy: policy
 )
+
+let summaryHook = RegisteredSummaryHook(name: "session-summary") { context in
+    let dropped = context.droppedMessages.count
+    return "Dropped \(dropped) older messages while preserving recent context."
+}
+
+await center.register(summaryHook: summaryHook)
 ```
 
 ## Running

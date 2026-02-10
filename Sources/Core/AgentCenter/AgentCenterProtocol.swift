@@ -49,8 +49,10 @@ public protocol AgentCenter: Sendable {
     // Hook management
     func register(preHook: RegisteredPreHook) async
     func register(postHook: RegisteredPostHook) async
+    func register(summaryHook: RegisteredSummaryHook) async
     func preHook(named name: String) async -> RegisteredPreHook?
     func postHook(named name: String) async -> RegisteredPostHook?
+    func summaryHook(named name: String) async -> RegisteredSummaryHook?
 
     init()
 

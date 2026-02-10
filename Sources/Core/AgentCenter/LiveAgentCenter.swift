@@ -20,6 +20,7 @@ actor LiveAgentCenter: AgentCenter {
     // Hook management
     private var preHooks: [String: RegisteredPreHook] = [:]
     private var postHooks: [String: RegisteredPostHook] = [:]
+    private var summaryHooks: [String: RegisteredSummaryHook] = [:]
     private var backgroundHookTasks: [UUID: Task<Void, Never>] = [:]
 
     @Dependency(\.agentObservers) private var observers
@@ -323,7 +324,8 @@ extension LiveAgentCenter {
             let transcript = try await loadTranscript(
                 for: agent,
                 session: session,
-                includeHistory: loadHistory
+                includeHistory: loadHistory,
+                executionPolicy: executionPolicy
             )
 
             // Create session with conversation history
@@ -464,7 +466,8 @@ extension LiveAgentCenter {
                     let transcript = try await self.loadTranscript(
                         for: agent,
                         session: session,
-                        includeHistory: loadHistory
+                        includeHistory: loadHistory,
+                        executionPolicy: executionPolicy
                     )
 
                     // Create session with history
@@ -733,13 +736,15 @@ extension LiveAgentCenter {
     private func loadTranscript(
         for agent: Agent,
         session: AgentSessionContext,
-        includeHistory: Bool
+        includeHistory: Bool,
+        executionPolicy: ExecutionPolicy
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
 
         // Load runs only from the current session, not from all sessions
         let previousRuns: [Run]
+        let existingSummary: String?
         if includeHistory {
             if let currentSession = try await storage.getSession(
                 sessionId: session.sessionId,
@@ -747,11 +752,14 @@ extension LiveAgentCenter {
                 userId: session.userId
             ) {
                 previousRuns = currentSession.runs
+                existingSummary = currentSession.summary
             } else {
                 previousRuns = []
+                existingSummary = nil
             }
         } else {
             previousRuns = []
+            existingSummary = nil
         }
 
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
@@ -763,14 +771,30 @@ extension LiveAgentCenter {
                 timestamp: Date()
             ))
 
+        let windowResult = applyContextWindow(
+            to: previousRuns,
+            maxHistoryMessages: executionPolicy.maxHistoryMessages,
+            maxHistoryTokens: executionPolicy.maxHistoryTokens
+        )
+
+        let summaryForTranscript = try await maybeRefreshSessionSummary(
+            agent: agent,
+            session: session,
+            existingSummary: existingSummary,
+            windowResult: windowResult,
+            executionPolicy: executionPolicy
+        )
+
         return try await buildTranscript(
-            from: previousRuns,
+            from: windowResult.runs,
+            summary: summaryForTranscript,
             for: agent
         )
     }
 
     private func buildTranscript(
         from runs: [Run],
+        summary: String?,
         for agent: Agent
     ) async throws -> Transcript {
         logger.debug("Building transcript from runs", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(runs.count)])
@@ -785,6 +809,16 @@ extension LiveAgentCenter {
             )
         )
         entries.append(instructionsEntry)
+
+        if let summary, !summary.isEmpty {
+            let summaryEntry = Transcript.Entry.instructions(
+                Transcript.Instructions(
+                    segments: [.text(.init(content: "Conversation summary:\n\(summary)"))],
+                    toolDefinitions: []
+                )
+            )
+            entries.append(summaryEntry)
+        }
 
         // Add messages from previous runs
         for run in runs {
@@ -1001,6 +1035,143 @@ extension LiveAgentCenter {
 // MARK: - Hook Management
 
 extension LiveAgentCenter {
+    private struct ContextWindowResult {
+        let runs: [Run]
+        let droppedMessages: [Message]
+        let retainedMessages: [Message]
+    }
+
+    private func applyContextWindow(
+        to runs: [Run],
+        maxHistoryMessages: Int?,
+        maxHistoryTokens: Int?
+    ) -> ContextWindowResult {
+        guard !runs.isEmpty else {
+            return ContextWindowResult(runs: [], droppedMessages: [], retainedMessages: [])
+        }
+
+        let flatMessages = runs
+            .flatMap { $0.messages }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        let trimmedByMessages = trimByMessageLimit(flatMessages, maxHistoryMessages)
+        let trimmedByTokens = trimByTokenLimit(trimmedByMessages, maxHistoryTokens)
+
+        if trimmedByTokens.count == flatMessages.count {
+            return ContextWindowResult(
+                runs: runs,
+                droppedMessages: [],
+                retainedMessages: trimmedByTokens
+            )
+        }
+
+        let retainedIDs = Set(trimmedByTokens.map(\.id))
+        let droppedMessages = flatMessages.filter { !retainedIDs.contains($0.id) }
+        let rebuiltRuns = rebuildRuns(from: runs, retainedMessageIDs: retainedIDs)
+
+        return ContextWindowResult(
+            runs: rebuiltRuns,
+            droppedMessages: droppedMessages,
+            retainedMessages: trimmedByTokens
+        )
+    }
+
+    private func trimByMessageLimit(_ messages: [Message], _ limit: Int?) -> [Message] {
+        guard let limit, limit > 0, messages.count > limit else { return messages }
+        return Array(messages.suffix(limit))
+    }
+
+    private func trimByTokenLimit(_ messages: [Message], _ tokenLimit: Int?) -> [Message] {
+        guard let tokenLimit, tokenLimit > 0 else { return messages }
+
+        var kept: [Message] = []
+        var used = 0
+
+        for message in messages.reversed() {
+            let estimated = estimatedTokenCount(for: message)
+            if !kept.isEmpty && used + estimated > tokenLimit {
+                break
+            }
+            used += estimated
+            kept.append(message)
+        }
+
+        return kept.reversed()
+    }
+
+    private func estimatedTokenCount(for message: Message) -> Int {
+        let contentChars = message.content?.count ?? 0
+        let toolArgChars = (message.toolCalls ?? []).reduce(0) { $0 + $1.arguments.count }
+        let chars = max(1, contentChars + toolArgChars)
+        return max(1, chars / 4)
+    }
+
+    private func rebuildRuns(from runs: [Run], retainedMessageIDs: Set<UUID>) -> [Run] {
+        runs.compactMap { run in
+            let retained = run.messages.filter { retainedMessageIDs.contains($0.id) }
+            guard !retained.isEmpty else { return nil }
+
+            return Run(
+                id: run.id,
+                agentId: run.agentId,
+                sessionId: run.sessionId,
+                userId: run.userId,
+                parentRunId: run.parentRunId,
+                messages: retained,
+                rawContent: run.rawContent,
+                createdAt: run.createdAt,
+                status: run.status,
+                modelName: run.modelName,
+                modelProvider: run.modelProvider,
+                toolExecutions: run.toolExecutions,
+                metrics: run.metrics,
+                sessionDataUpdates: run.sessionDataUpdates,
+                metadata: run.metadata
+            )
+        }
+    }
+
+    private func maybeRefreshSessionSummary(
+        agent: Agent,
+        session: AgentSessionContext,
+        existingSummary: String?,
+        windowResult: ContextWindowResult,
+        executionPolicy: ExecutionPolicy
+    ) async throws -> String? {
+        guard !windowResult.droppedMessages.isEmpty else { return existingSummary }
+        guard let summaryHookName = executionPolicy.summaryHookName else { return existingSummary }
+        guard let summaryHook = summaryHooks[summaryHookName] else {
+            logger.warning("Summary hook not found", metadata: ["hook.name": .string(summaryHookName)])
+            return existingSummary
+        }
+
+        let context = SummaryHookContext(
+            agent: agent,
+            session: session,
+            existingSummary: existingSummary,
+            droppedMessages: windowResult.droppedMessages,
+            retainedMessages: windowResult.retainedMessages,
+            maxHistoryMessages: executionPolicy.maxHistoryMessages,
+            maxHistoryTokens: executionPolicy.maxHistoryTokens
+        )
+
+        let newSummary = try await summaryHook.execute(context)
+        guard let newSummary, !newSummary.isEmpty else { return existingSummary }
+
+        @Dependency(\.storage) var storage
+        guard var currentSession = try await storage.getSession(
+            sessionId: session.sessionId,
+            agentId: session.agentId,
+            userId: session.userId
+        ) else {
+            return newSummary
+        }
+
+        currentSession.summary = newSummary
+        _ = try await storage.upsertSession(currentSession)
+        return newSummary
+    }
+
     private func generationOptions(for executionPolicy: ExecutionPolicy) -> GenerationOptions {
         var options = GenerationOptions()
         if let maxToolCalls = executionPolicy.maxToolCalls {
@@ -1099,6 +1270,12 @@ extension LiveAgentCenter {
         logger.debug("Post-hook registered successfully", metadata: ["hook.name": .string(postHook.config.name)])
     }
 
+    func register(summaryHook: RegisteredSummaryHook) async {
+        logger.info("Registering summary-hook", metadata: ["hook.name": .string(summaryHook.name)])
+        summaryHooks[summaryHook.name] = summaryHook
+        logger.debug("Summary-hook registered successfully", metadata: ["hook.name": .string(summaryHook.name)])
+    }
+
     func preHook(named name: String) async -> RegisteredPreHook? {
         let hook = preHooks[name]
         if hook != nil {
@@ -1115,6 +1292,16 @@ extension LiveAgentCenter {
             logger.debug("Post-hook found", metadata: ["hook.name": .string(name)])
         } else {
             logger.warning("Post-hook not found", metadata: ["hook.name": .string(name)])
+        }
+        return hook
+    }
+
+    func summaryHook(named name: String) async -> RegisteredSummaryHook? {
+        let hook = summaryHooks[name]
+        if hook != nil {
+            logger.debug("Summary-hook found", metadata: ["hook.name": .string(name)])
+        } else {
+            logger.warning("Summary-hook not found", metadata: ["hook.name": .string(name)])
         }
         return hook
     }

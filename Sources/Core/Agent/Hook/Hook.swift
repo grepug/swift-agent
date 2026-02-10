@@ -30,6 +30,11 @@ public typealias PreHookFunction = @Sendable (inout HookContext) async throws ->
 /// Executes after agent run with access to context and the generated run
 public typealias PostHookFunction = @Sendable (HookContext, Run) async throws -> Void
 
+/// Summary-hook function signature.
+/// Executes when context-window compaction drops history and a new summary is needed.
+/// Return `nil` to keep existing summary unchanged.
+public typealias SummaryHookFunction = @Sendable (SummaryHookContext) async throws -> String?
+
 // MARK: - Registered Hooks
 
 /// A pre-hook registered in the agent center with its executable function
@@ -76,6 +81,62 @@ public struct RegisteredPostHook: Sendable {
         execute: @escaping PostHookFunction
     ) {
         self.config = Hook(name: name, blocking: blocking)
+        self.execute = execute
+    }
+}
+
+/// Context provided to summary hooks during context-window compaction.
+public struct SummaryHookContext: Sendable {
+    /// The agent being executed.
+    public let agent: Agent
+
+    /// The session context for this run.
+    public let session: AgentSessionContext
+
+    /// The current persisted session summary, if any.
+    public let existingSummary: String?
+
+    /// Messages dropped by context-window trimming.
+    public let droppedMessages: [Message]
+
+    /// Messages retained in the trimmed history.
+    public let retainedMessages: [Message]
+
+    /// Active history message cap.
+    public let maxHistoryMessages: Int?
+
+    /// Active history token cap.
+    public let maxHistoryTokens: Int?
+
+    public init(
+        agent: Agent,
+        session: AgentSessionContext,
+        existingSummary: String?,
+        droppedMessages: [Message],
+        retainedMessages: [Message],
+        maxHistoryMessages: Int?,
+        maxHistoryTokens: Int?
+    ) {
+        self.agent = agent
+        self.session = session
+        self.existingSummary = existingSummary
+        self.droppedMessages = droppedMessages
+        self.retainedMessages = retainedMessages
+        self.maxHistoryMessages = maxHistoryMessages
+        self.maxHistoryTokens = maxHistoryTokens
+    }
+}
+
+/// A summary hook registered in the agent center.
+public struct RegisteredSummaryHook: Sendable {
+    /// Unique hook name.
+    public let name: String
+
+    /// Executable function.
+    public let execute: SummaryHookFunction
+
+    public init(name: String, execute: @escaping SummaryHookFunction) {
+        self.name = name
         self.execute = execute
     }
 }
