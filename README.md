@@ -140,6 +140,31 @@ for try await chunk in stream {
 }
 ```
 
+## Execution policy
+
+You can control timeout, retry behavior, cancellation propagation, and tool-call limits per run:
+
+```swift
+let policy = ExecutionPolicy(
+    timeout: 10,
+    retries: 1,
+    propagateCancellation: true,
+    maxToolCalls: 4
+)
+
+let run = try await center.runAgent(
+    session: context,
+    message: "Review this Swift snippet",
+    executionPolicy: policy
+)
+
+let stream = await center.streamAgent(
+    session: context,
+    message: "Explain actors in Swift",
+    executionPolicy: policy
+)
+```
+
 ## Running
 
 ```bash

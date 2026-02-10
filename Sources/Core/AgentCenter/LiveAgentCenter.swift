@@ -282,7 +282,8 @@ extension LiveAgentCenter {
         session: AgentSessionContext,
         message: String,
         as type: T.Type,
-        loadHistory: Bool = true
+        loadHistory: Bool = true,
+        executionPolicy: ExecutionPolicy = .default
     ) async throws -> Run {
         logger.info("Running agent", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
 
@@ -334,8 +335,11 @@ extension LiveAgentCenter {
 
             // Track the number of entries before responding to identify new messages
             let entriesBeforeResponse = modelSession.transcript.count
+            let options = generationOptions(for: executionPolicy)
 
-            let response = try await modelSession.respond(to: finalMessage, generating: T.self)
+            let response = try await executeWithPolicy(executionPolicy) {
+                return try await modelSession.respond(to: finalMessage, generating: T.self, options: options)
+            }
 
             let content: Data?
 
@@ -418,7 +422,8 @@ extension LiveAgentCenter {
     func streamAgent(
         session: AgentSessionContext,
         message: String,
-        loadHistory: Bool = true
+        loadHistory: Bool = true,
+        executionPolicy: ExecutionPolicy = .default
     ) async -> AsyncThrowingStream<String, Error> {
         let agentLogger = logger  // Capture logger for use in closure
         return AsyncThrowingStream { continuation in
@@ -470,28 +475,34 @@ extension LiveAgentCenter {
                     // Track entries before the stream to extract only new messages from this turn.
                     let entriesBeforeResponse = modelSession.transcript.count
 
-                    let stream = modelSession.streamResponse(to: finalMessage)
-                    var previousCumulative = ""
+                    let options = generationOptions(for: executionPolicy)
+                    let stream = modelSession.streamResponse(to: finalMessage, options: options)
 
-                    for try await snapshot in stream {
-                        let cumulative: String
-                        if case .string(let value) = snapshot.rawContent.kind {
-                            cumulative = value
-                        } else {
-                            cumulative = snapshot.rawContent.jsonString
+                    let previousCumulative = try await executeWithoutRetries(executionPolicy) {
+                        var cumulativeState = ""
+
+                        for try await snapshot in stream {
+                            let cumulative: String
+                            if case .string(let value) = snapshot.rawContent.kind {
+                                cumulative = value
+                            } else {
+                                cumulative = snapshot.rawContent.jsonString
+                            }
+
+                            let delta: String
+                            if cumulative.hasPrefix(cumulativeState) {
+                                delta = String(cumulative.dropFirst(cumulativeState.count))
+                            } else {
+                                delta = cumulative
+                            }
+                            cumulativeState = cumulative
+
+                            if !delta.isEmpty {
+                                continuation.yield(delta)
+                            }
                         }
 
-                        let delta: String
-                        if cumulative.hasPrefix(previousCumulative) {
-                            delta = String(cumulative.dropFirst(previousCumulative.count))
-                        } else {
-                            delta = cumulative
-                        }
-                        previousCumulative = cumulative
-
-                        if !delta.isEmpty {
-                            continuation.yield(delta)
-                        }
+                        return cumulativeState
                     }
 
                     // Build run from new transcript entries, same as runAgent.
@@ -990,6 +1001,92 @@ extension LiveAgentCenter {
 // MARK: - Hook Management
 
 extension LiveAgentCenter {
+    private func generationOptions(for executionPolicy: ExecutionPolicy) -> GenerationOptions {
+        var options = GenerationOptions()
+        if let maxToolCalls = executionPolicy.maxToolCalls {
+            options[custom: OpenAILanguageModel.self] = .init(maxToolCalls: maxToolCalls)
+        }
+        return options
+    }
+
+    private func executeWithPolicy<T: Sendable>(
+        _ executionPolicy: ExecutionPolicy,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        let totalAttempts = max(1, executionPolicy.retries + 1)
+        var lastError: Error?
+
+        for attempt in 1...totalAttempts {
+            do {
+                return try await runWithTimeout(
+                    timeout: executionPolicy.timeout,
+                    operation: operation
+                )
+            } catch is CancellationError {
+                if executionPolicy.propagateCancellation {
+                    throw CancellationError()
+                }
+                throw AgentError.executionTimedOut(executionPolicy.timeout ?? 0)
+            } catch {
+                lastError = error
+            }
+
+            if attempt < totalAttempts {
+                logger.warning(
+                    "Agent execution attempt failed, retrying",
+                    metadata: [
+                        "attempt": .stringConvertible(attempt),
+                        "total.attempts": .stringConvertible(totalAttempts),
+                        "error": .string(String(describing: lastError!)),
+                    ])
+            }
+        }
+
+        throw lastError ?? AgentError.noResponseFromModel
+    }
+
+    private func executeWithoutRetries<T: Sendable>(
+        _ executionPolicy: ExecutionPolicy,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await runWithTimeout(timeout: executionPolicy.timeout, operation: operation)
+        } catch is CancellationError {
+            if executionPolicy.propagateCancellation {
+                throw CancellationError()
+            }
+            throw AgentError.executionTimedOut(executionPolicy.timeout ?? 0)
+        }
+    }
+
+    private func runWithTimeout<T: Sendable>(
+        timeout: TimeInterval?,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        guard let timeout, timeout > 0 else {
+            return try await operation()
+        }
+
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+
+            group.addTask {
+                let nanoseconds = UInt64(timeout * 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanoseconds)
+                throw AgentError.executionTimedOut(timeout)
+            }
+
+            defer { group.cancelAll() }
+
+            guard let firstResult = try await group.next() else {
+                throw AgentError.noResponseFromModel
+            }
+            return firstResult
+        }
+    }
+
     func register(preHook: RegisteredPreHook) async {
         logger.info("Registering pre-hook", metadata: ["hook.name": .string(preHook.config.name)])
         preHooks[preHook.config.name] = preHook
