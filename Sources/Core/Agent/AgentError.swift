@@ -5,6 +5,7 @@ public enum AgentError: Error, CustomStringConvertible {
     case agentNotFound(String)
     case modelNotFound(String)
     case noResponseFromModel
+    case executionTimedOut(TimeInterval)
     case invalidConfiguration(String)
     case invalidJSONResponse
     case sessionNotFound(UUID)
@@ -17,6 +18,8 @@ public enum AgentError: Error, CustomStringConvertible {
             return "Model '\(name)' not registered in AgentCenter"
         case .noResponseFromModel:
             return "No response received from model"
+        case .executionTimedOut(let timeout):
+            return "Agent execution timed out after \(timeout) seconds"
         case .invalidConfiguration(let message):
             return "Invalid configuration: \(message)"
         case .invalidJSONResponse:

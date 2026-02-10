@@ -22,13 +22,15 @@ public protocol AgentCenter: Sendable {
         session: AgentSessionContext,
         message: String,
         as type: T.Type,
-        loadHistory: Bool
+        loadHistory: Bool,
+        executionPolicy: ExecutionPolicy
     ) async throws -> Run
 
     func streamAgent(
         session: AgentSessionContext,
         message: String,
-        loadHistory: Bool
+        loadHistory: Bool,
+        executionPolicy: ExecutionPolicy
     ) async -> AsyncThrowingStream<String, Error>
 
     // Model management (from ModelCenter)
@@ -47,8 +49,10 @@ public protocol AgentCenter: Sendable {
     // Hook management
     func register(preHook: RegisteredPreHook) async
     func register(postHook: RegisteredPostHook) async
+    func register(summaryHook: RegisteredSummaryHook) async
     func preHook(named name: String) async -> RegisteredPreHook?
     func postHook(named name: String) async -> RegisteredPostHook?
+    func summaryHook(named name: String) async -> RegisteredSummaryHook?
 
     init()
 
@@ -103,37 +107,71 @@ public extension AgentCenter {
     func runAgent<T: Codable & Generable>(
         session: AgentSessionContext,
         message: String,
-        as type: T.Type
+        as type: T.Type,
+        loadHistory: Bool
     ) async throws -> Run {
         try await runAgent(
             session: session,
             message: message,
             as: type,
-            loadHistory: true
+            loadHistory: loadHistory,
+            executionPolicy: .default
+        )
+    }
+
+    func runAgent<T: Codable & Generable>(
+        session: AgentSessionContext,
+        message: String,
+        as type: T.Type,
+        executionPolicy: ExecutionPolicy = .default
+    ) async throws -> Run {
+        try await runAgent(
+            session: session,
+            message: message,
+            as: type,
+            loadHistory: true,
+            executionPolicy: executionPolicy
         )
     }
 
     func runAgent(
         session: AgentSessionContext,
         message: String,
-        loadHistory: Bool = true
+        loadHistory: Bool = true,
+        executionPolicy: ExecutionPolicy = .default
     ) async throws -> Run {
         try await runAgent(
             session: session,
             message: message,
             as: String.self,
-            loadHistory: loadHistory
+            loadHistory: loadHistory,
+            executionPolicy: executionPolicy
         )
     }
 
     func streamAgent(
         session: AgentSessionContext,
-        message: String
+        message: String,
+        loadHistory: Bool
     ) async -> AsyncThrowingStream<String, Error> {
         await streamAgent(
             session: session,
             message: message,
-            loadHistory: true
+            loadHistory: loadHistory,
+            executionPolicy: .default
+        )
+    }
+
+    func streamAgent(
+        session: AgentSessionContext,
+        message: String,
+        executionPolicy: ExecutionPolicy = .default
+    ) async -> AsyncThrowingStream<String, Error> {
+        await streamAgent(
+            session: session,
+            message: message,
+            loadHistory: true,
+            executionPolicy: executionPolicy
         )
     }
 }

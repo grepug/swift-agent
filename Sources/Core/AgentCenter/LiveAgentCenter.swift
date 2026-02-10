@@ -20,6 +20,7 @@ actor LiveAgentCenter: AgentCenter {
     // Hook management
     private var preHooks: [String: RegisteredPreHook] = [:]
     private var postHooks: [String: RegisteredPostHook] = [:]
+    private var summaryHooks: [String: RegisteredSummaryHook] = [:]
     private var backgroundHookTasks: [UUID: Task<Void, Never>] = [:]
 
     @Dependency(\.agentObservers) private var observers
@@ -282,7 +283,8 @@ extension LiveAgentCenter {
         session: AgentSessionContext,
         message: String,
         as type: T.Type,
-        loadHistory: Bool = true
+        loadHistory: Bool = true,
+        executionPolicy: ExecutionPolicy = .default
     ) async throws -> Run {
         logger.info("Running agent", metadata: ["agent.id": .string(session.agentId), "session.id": .string(session.sessionId.uuidString), "user.id": .string(session.userId.uuidString)])
 
@@ -322,21 +324,29 @@ extension LiveAgentCenter {
             let transcript = try await loadTranscript(
                 for: agent,
                 session: session,
-                includeHistory: loadHistory
+                includeHistory: loadHistory,
+                executionPolicy: executionPolicy
             )
 
-            // Create session with conversation history
-            let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
-
-            // Use AnyLanguageModel's session to handle the conversation
-            // Individual API calls will be tracked via handleModelEvent()
+            // Use AnyLanguageModel's session to handle the conversation.
+            // Individual API calls will be tracked via handleModelEvent().
             logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
 
-            // Track the number of entries before responding to identify new messages
-            let entriesBeforeResponse = modelSession.transcript.count
+            let options = generationOptions(for: executionPolicy)
 
-            let response = try await modelSession.respond(to: finalMessage, generating: T.self)
+            let execution = try await executeWithPolicy(executionPolicy) {
+                let modelSession = try await self.createSession(for: agent, sessionId: session.sessionId, with: transcript)
+                let entriesBeforeResponse = modelSession.transcript.count
+                let response = try await modelSession.respond(to: finalMessage, generating: T.self, options: options)
+                let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
 
+                return (
+                    response: response,
+                    transcript: Transcript(entries: newEntries)
+                )
+            }
+
+            let response = execution.response
             let content: Data?
 
             if let string = response.content as? String {
@@ -348,9 +358,7 @@ extension LiveAgentCenter {
                 content = try JSONEncoder().encode(response.content)
             }
 
-            // Extract only NEW messages from this turn (entries added after responding)
-            let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
-            let messages = extractMessages(from: Transcript(entries: newEntries))
+            let messages = extractMessages(from: execution.transcript)
             logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
 
             // Create run record
@@ -418,7 +426,8 @@ extension LiveAgentCenter {
     func streamAgent(
         session: AgentSessionContext,
         message: String,
-        loadHistory: Bool = true
+        loadHistory: Bool = true,
+        executionPolicy: ExecutionPolicy = .default
     ) async -> AsyncThrowingStream<String, Error> {
         let agentLogger = logger  // Capture logger for use in closure
         return AsyncThrowingStream { continuation in
@@ -459,7 +468,8 @@ extension LiveAgentCenter {
                     let transcript = try await self.loadTranscript(
                         for: agent,
                         session: session,
-                        includeHistory: loadHistory
+                        includeHistory: loadHistory,
+                        executionPolicy: executionPolicy
                     )
 
                     // Create session with history
@@ -470,28 +480,34 @@ extension LiveAgentCenter {
                     // Track entries before the stream to extract only new messages from this turn.
                     let entriesBeforeResponse = modelSession.transcript.count
 
-                    let stream = modelSession.streamResponse(to: finalMessage)
-                    var previousCumulative = ""
+                    let options = generationOptions(for: executionPolicy)
+                    let stream = modelSession.streamResponse(to: finalMessage, options: options)
 
-                    for try await snapshot in stream {
-                        let cumulative: String
-                        if case .string(let value) = snapshot.rawContent.kind {
-                            cumulative = value
-                        } else {
-                            cumulative = snapshot.rawContent.jsonString
+                    let previousCumulative = try await executeWithoutRetries(executionPolicy) {
+                        var cumulativeState = ""
+
+                        for try await snapshot in stream {
+                            let cumulative: String
+                            if case .string(let value) = snapshot.rawContent.kind {
+                                cumulative = value
+                            } else {
+                                cumulative = snapshot.rawContent.jsonString
+                            }
+
+                            let delta: String
+                            if cumulative.hasPrefix(cumulativeState) {
+                                delta = String(cumulative.dropFirst(cumulativeState.count))
+                            } else {
+                                delta = cumulative
+                            }
+                            cumulativeState = cumulative
+
+                            if !delta.isEmpty {
+                                continuation.yield(delta)
+                            }
                         }
 
-                        let delta: String
-                        if cumulative.hasPrefix(previousCumulative) {
-                            delta = String(cumulative.dropFirst(previousCumulative.count))
-                        } else {
-                            delta = cumulative
-                        }
-                        previousCumulative = cumulative
-
-                        if !delta.isEmpty {
-                            continuation.yield(delta)
-                        }
+                        return cumulativeState
                     }
 
                     // Build run from new transcript entries, same as runAgent.
@@ -722,13 +738,15 @@ extension LiveAgentCenter {
     private func loadTranscript(
         for agent: Agent,
         session: AgentSessionContext,
-        includeHistory: Bool
+        includeHistory: Bool,
+        executionPolicy: ExecutionPolicy
     ) async throws -> Transcript {
         logger.debug("Loading transcript", metadata: ["agent.id": .string(agent.id), "include.history": .stringConvertible(includeHistory)])
         @Dependency(\.storage) var storage
 
         // Load runs only from the current session, not from all sessions
         let previousRuns: [Run]
+        let existingSummary: String?
         if includeHistory {
             if let currentSession = try await storage.getSession(
                 sessionId: session.sessionId,
@@ -736,11 +754,14 @@ extension LiveAgentCenter {
                 userId: session.userId
             ) {
                 previousRuns = currentSession.runs
+                existingSummary = currentSession.summary
             } else {
                 previousRuns = []
+                existingSummary = nil
             }
         } else {
             previousRuns = []
+            existingSummary = nil
         }
 
         logger.debug("Previous runs loaded", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(previousRuns.count)])
@@ -752,14 +773,30 @@ extension LiveAgentCenter {
                 timestamp: Date()
             ))
 
+        let windowResult = applyContextWindow(
+            to: previousRuns,
+            maxHistoryMessages: executionPolicy.maxHistoryMessages,
+            maxHistoryTokens: executionPolicy.maxHistoryTokens
+        )
+
+        let summaryForTranscript = try await maybeRefreshSessionSummary(
+            agent: agent,
+            session: session,
+            existingSummary: existingSummary,
+            windowResult: windowResult,
+            executionPolicy: executionPolicy
+        )
+
         return try await buildTranscript(
-            from: previousRuns,
+            from: windowResult.runs,
+            summary: summaryForTranscript,
             for: agent
         )
     }
 
     private func buildTranscript(
         from runs: [Run],
+        summary: String?,
         for agent: Agent
     ) async throws -> Transcript {
         logger.debug("Building transcript from runs", metadata: ["agent.id": .string(agent.id), "run.count": .stringConvertible(runs.count)])
@@ -774,6 +811,16 @@ extension LiveAgentCenter {
             )
         )
         entries.append(instructionsEntry)
+
+        if let summary, !summary.isEmpty {
+            let summaryEntry = Transcript.Entry.instructions(
+                Transcript.Instructions(
+                    segments: [.text(.init(content: "Conversation summary:\n\(summary)"))],
+                    toolDefinitions: []
+                )
+            )
+            entries.append(summaryEntry)
+        }
 
         // Add messages from previous runs
         for run in runs {
@@ -990,6 +1037,248 @@ extension LiveAgentCenter {
 // MARK: - Hook Management
 
 extension LiveAgentCenter {
+    private struct ContextWindowResult {
+        let runs: [Run]
+        let droppedMessages: [Message]
+        let retainedMessages: [Message]
+    }
+
+    private func applyContextWindow(
+        to runs: [Run],
+        maxHistoryMessages: Int?,
+        maxHistoryTokens: Int?
+    ) -> ContextWindowResult {
+        guard !runs.isEmpty else {
+            return ContextWindowResult(runs: [], droppedMessages: [], retainedMessages: [])
+        }
+
+        let flatMessages = runs
+            .flatMap { $0.messages }
+            .sorted { $0.createdAt < $1.createdAt }
+
+        let trimmedByMessages = trimByMessageLimit(flatMessages, maxHistoryMessages)
+        let trimmedByTokens = trimByTokenLimit(trimmedByMessages, maxHistoryTokens)
+
+        if trimmedByTokens.count == flatMessages.count {
+            return ContextWindowResult(
+                runs: runs,
+                droppedMessages: [],
+                retainedMessages: trimmedByTokens
+            )
+        }
+
+        let retainedIDs = Set(trimmedByTokens.map(\.id))
+        let droppedMessages = flatMessages.filter { !retainedIDs.contains($0.id) }
+        let rebuiltRuns = rebuildRuns(from: runs, retainedMessageIDs: retainedIDs)
+
+        return ContextWindowResult(
+            runs: rebuiltRuns,
+            droppedMessages: droppedMessages,
+            retainedMessages: trimmedByTokens
+        )
+    }
+
+    private func trimByMessageLimit(_ messages: [Message], _ limit: Int?) -> [Message] {
+        guard let limit, limit > 0, messages.count > limit else { return messages }
+        return Array(messages.suffix(limit))
+    }
+
+    private func trimByTokenLimit(_ messages: [Message], _ tokenLimit: Int?) -> [Message] {
+        guard let tokenLimit, tokenLimit > 0 else { return messages }
+
+        var kept: [Message] = []
+        var used = 0
+
+        for message in messages.reversed() {
+            let estimated = estimatedTokenCount(for: message)
+            if !kept.isEmpty && used + estimated > tokenLimit {
+                break
+            }
+            used += estimated
+            kept.append(message)
+        }
+
+        return kept.reversed()
+    }
+
+    private func estimatedTokenCount(for message: Message) -> Int {
+        let contentChars = message.content?.count ?? 0
+        let toolArgChars = (message.toolCalls ?? []).reduce(0) { $0 + $1.arguments.count }
+        let chars = max(1, contentChars + toolArgChars)
+        return max(1, chars / 4)
+    }
+
+    private func rebuildRuns(from runs: [Run], retainedMessageIDs: Set<UUID>) -> [Run] {
+        runs.compactMap { run in
+            let retained = run.messages.filter { retainedMessageIDs.contains($0.id) }
+            guard !retained.isEmpty else { return nil }
+
+            return Run(
+                id: run.id,
+                agentId: run.agentId,
+                sessionId: run.sessionId,
+                userId: run.userId,
+                parentRunId: run.parentRunId,
+                messages: retained,
+                rawContent: run.rawContent,
+                createdAt: run.createdAt,
+                status: run.status,
+                modelName: run.modelName,
+                modelProvider: run.modelProvider,
+                toolExecutions: run.toolExecutions,
+                metrics: run.metrics,
+                sessionDataUpdates: run.sessionDataUpdates,
+                metadata: run.metadata
+            )
+        }
+    }
+
+    private func maybeRefreshSessionSummary(
+        agent: Agent,
+        session: AgentSessionContext,
+        existingSummary: String?,
+        windowResult: ContextWindowResult,
+        executionPolicy: ExecutionPolicy
+    ) async throws -> String? {
+        guard !windowResult.droppedMessages.isEmpty else { return existingSummary }
+        guard let summaryHookName = executionPolicy.summaryHookName else { return existingSummary }
+        guard let summaryHook = summaryHooks[summaryHookName] else {
+            logger.warning("Summary hook not found", metadata: ["hook.name": .string(summaryHookName)])
+            return existingSummary
+        }
+
+        let context = SummaryHookContext(
+            agent: agent,
+            session: session,
+            existingSummary: existingSummary,
+            droppedMessages: windowResult.droppedMessages,
+            retainedMessages: windowResult.retainedMessages,
+            maxHistoryMessages: executionPolicy.maxHistoryMessages,
+            maxHistoryTokens: executionPolicy.maxHistoryTokens
+        )
+
+        let newSummary = try await summaryHook.execute(context)
+        guard let newSummary, !newSummary.isEmpty else { return existingSummary }
+
+        @Dependency(\.storage) var storage
+        guard var currentSession = try await storage.getSession(
+            sessionId: session.sessionId,
+            agentId: session.agentId,
+            userId: session.userId
+        ) else {
+            return newSummary
+        }
+
+        currentSession.summary = newSummary
+        _ = try await storage.upsertSession(currentSession)
+        return newSummary
+    }
+
+    private func generationOptions(for executionPolicy: ExecutionPolicy) -> GenerationOptions {
+        var options = GenerationOptions()
+        if let maxToolCalls = executionPolicy.maxToolCalls {
+            options[custom: OpenAILanguageModel.self] = .init(maxToolCalls: maxToolCalls)
+        }
+        return options
+    }
+
+    private struct TimeoutSpec {
+        let seconds: TimeInterval
+        let nanoseconds: UInt64
+    }
+
+    private func executeWithPolicy<T: Sendable>(
+        _ executionPolicy: ExecutionPolicy,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        let totalAttempts = max(1, executionPolicy.retries + 1)
+        var lastError: Error?
+
+        for attempt in 1...totalAttempts {
+            do {
+                return try await runWithTimeout(
+                    timeout: executionPolicy.timeout,
+                    operation: operation
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+
+            if attempt < totalAttempts {
+                logger.warning(
+                    "Agent execution attempt failed, retrying",
+                    metadata: [
+                        "attempt": .stringConvertible(attempt),
+                        "total.attempts": .stringConvertible(totalAttempts),
+                        "error": .string(String(describing: lastError!)),
+                    ])
+            }
+        }
+
+        throw lastError ?? AgentError.noResponseFromModel
+    }
+
+    private func executeWithoutRetries<T: Sendable>(
+        _ executionPolicy: ExecutionPolicy,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await runWithTimeout(timeout: executionPolicy.timeout, operation: operation)
+        } catch is CancellationError {
+            throw CancellationError()
+        }
+    }
+
+    private func runWithTimeout<T: Sendable>(
+        timeout: TimeInterval?,
+        operation: @Sendable @escaping () async throws -> T
+    ) async throws -> T {
+        guard let timeoutSpec = try timeoutSpec(from: timeout) else {
+            return try await operation()
+        }
+
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutSpec.nanoseconds)
+                throw AgentError.executionTimedOut(timeoutSpec.seconds)
+            }
+
+            defer { group.cancelAll() }
+
+            guard let firstResult = try await group.next() else {
+                throw AgentError.noResponseFromModel
+            }
+            return firstResult
+        }
+    }
+
+    private func timeoutSpec(from timeout: TimeInterval?) throws -> TimeoutSpec? {
+        guard let timeout else {
+            return nil
+        }
+
+        guard timeout.isFinite else {
+            throw AgentError.invalidConfiguration("ExecutionPolicy.timeout must be a finite number")
+        }
+
+        guard timeout > 0 else {
+            return nil
+        }
+
+        let maxTimeoutSeconds = Double(UInt64.max) / 1_000_000_000
+        let boundedTimeout = min(timeout, maxTimeoutSeconds)
+        let nanosecondsDouble = boundedTimeout * 1_000_000_000
+        let nanoseconds = UInt64(nanosecondsDouble.rounded(.up))
+
+        return TimeoutSpec(seconds: boundedTimeout, nanoseconds: nanoseconds)
+    }
+
     func register(preHook: RegisteredPreHook) async {
         logger.info("Registering pre-hook", metadata: ["hook.name": .string(preHook.config.name)])
         preHooks[preHook.config.name] = preHook
@@ -1000,6 +1289,12 @@ extension LiveAgentCenter {
         logger.info("Registering post-hook", metadata: ["hook.name": .string(postHook.config.name)])
         postHooks[postHook.config.name] = postHook
         logger.debug("Post-hook registered successfully", metadata: ["hook.name": .string(postHook.config.name)])
+    }
+
+    func register(summaryHook: RegisteredSummaryHook) async {
+        logger.info("Registering summary-hook", metadata: ["hook.name": .string(summaryHook.name)])
+        summaryHooks[summaryHook.name] = summaryHook
+        logger.debug("Summary-hook registered successfully", metadata: ["hook.name": .string(summaryHook.name)])
     }
 
     func preHook(named name: String) async -> RegisteredPreHook? {
@@ -1018,6 +1313,16 @@ extension LiveAgentCenter {
             logger.debug("Post-hook found", metadata: ["hook.name": .string(name)])
         } else {
             logger.warning("Post-hook not found", metadata: ["hook.name": .string(name)])
+        }
+        return hook
+    }
+
+    func summaryHook(named name: String) async -> RegisteredSummaryHook? {
+        let hook = summaryHooks[name]
+        if hook != nil {
+            logger.debug("Summary-hook found", metadata: ["hook.name": .string(name)])
+        } else {
+            logger.warning("Summary-hook not found", metadata: ["hook.name": .string(name)])
         }
         return hook
     }

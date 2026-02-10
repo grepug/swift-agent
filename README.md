@@ -140,6 +140,41 @@ for try await chunk in stream {
 }
 ```
 
+## Execution policy
+
+You can control timeout, retry behavior, cancellation propagation, and tool-call limits per run:
+
+```swift
+let policy = ExecutionPolicy(
+    timeout: 10,
+    retries: 1,
+    propagateCancellation: true,
+    maxToolCalls: 4,
+    maxHistoryMessages: 40,
+    maxHistoryTokens: 4_000,
+    summaryHookName: "session-summary"
+)
+
+let run = try await center.runAgent(
+    session: context,
+    message: "Review this Swift snippet",
+    executionPolicy: policy
+)
+
+let stream = await center.streamAgent(
+    session: context,
+    message: "Explain actors in Swift",
+    executionPolicy: policy
+)
+
+let summaryHook = RegisteredSummaryHook(name: "session-summary") { context in
+    let dropped = context.droppedMessages.count
+    return "Dropped \(dropped) older messages while preserving recent context."
+}
+
+await center.register(summaryHook: summaryHook)
+```
+
 ## Running
 
 ```bash
