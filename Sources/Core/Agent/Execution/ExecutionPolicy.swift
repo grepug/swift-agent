@@ -48,7 +48,7 @@ public struct ExecutionPolicy: Sendable, Codable, Hashable {
         self.timeout = timeout
         self.retries = max(0, retries)
         self.propagateCancellation = propagateCancellation
-        self.maxToolCalls = maxToolCalls
+        self.maxToolCalls = maxToolCalls.map { max(0, $0) }
         self.maxHistoryMessages = maxHistoryMessages
         self.maxHistoryTokens = maxHistoryTokens
         self.summaryHookName = summaryHookName

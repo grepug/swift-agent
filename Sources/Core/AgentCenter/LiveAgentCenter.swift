@@ -328,21 +328,25 @@ extension LiveAgentCenter {
                 executionPolicy: executionPolicy
             )
 
-            // Create session with conversation history
-            let modelSession = try await createSession(for: agent, sessionId: session.sessionId, with: transcript)
-
-            // Use AnyLanguageModel's session to handle the conversation
-            // Individual API calls will be tracked via handleModelEvent()
+            // Use AnyLanguageModel's session to handle the conversation.
+            // Individual API calls will be tracked via handleModelEvent().
             logger.debug("Sending message to model", metadata: ["agent.name": .string(agent.name), "model.name": .string(agent.modelName)])
 
-            // Track the number of entries before responding to identify new messages
-            let entriesBeforeResponse = modelSession.transcript.count
             let options = generationOptions(for: executionPolicy)
 
-            let response = try await executeWithPolicy(executionPolicy) {
-                return try await modelSession.respond(to: finalMessage, generating: T.self, options: options)
+            let execution = try await executeWithPolicy(executionPolicy) {
+                let modelSession = try await self.createSession(for: agent, sessionId: session.sessionId, with: transcript)
+                let entriesBeforeResponse = modelSession.transcript.count
+                let response = try await modelSession.respond(to: finalMessage, generating: T.self, options: options)
+                let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
+
+                return (
+                    response: response,
+                    transcript: Transcript(entries: newEntries)
+                )
             }
 
+            let response = execution.response
             let content: Data?
 
             if let string = response.content as? String {
@@ -354,9 +358,7 @@ extension LiveAgentCenter {
                 content = try JSONEncoder().encode(response.content)
             }
 
-            // Extract only NEW messages from this turn (entries added after responding)
-            let newEntries = Array(modelSession.transcript.dropFirst(entriesBeforeResponse))
-            let messages = extractMessages(from: Transcript(entries: newEntries))
+            let messages = extractMessages(from: execution.transcript)
             logger.debug("Messages extracted from transcript", metadata: ["message.count": .stringConvertible(messages.count)])
 
             // Create run record
@@ -1180,6 +1182,11 @@ extension LiveAgentCenter {
         return options
     }
 
+    private struct TimeoutSpec {
+        let seconds: TimeInterval
+        let nanoseconds: UInt64
+    }
+
     private func executeWithPolicy<T: Sendable>(
         _ executionPolicy: ExecutionPolicy,
         operation: @Sendable @escaping () async throws -> T
@@ -1194,10 +1201,7 @@ extension LiveAgentCenter {
                     operation: operation
                 )
             } catch is CancellationError {
-                if executionPolicy.propagateCancellation {
-                    throw CancellationError()
-                }
-                throw AgentError.executionTimedOut(executionPolicy.timeout ?? 0)
+                throw CancellationError()
             } catch {
                 lastError = error
             }
@@ -1223,10 +1227,7 @@ extension LiveAgentCenter {
         do {
             return try await runWithTimeout(timeout: executionPolicy.timeout, operation: operation)
         } catch is CancellationError {
-            if executionPolicy.propagateCancellation {
-                throw CancellationError()
-            }
-            throw AgentError.executionTimedOut(executionPolicy.timeout ?? 0)
+            throw CancellationError()
         }
     }
 
@@ -1234,7 +1235,7 @@ extension LiveAgentCenter {
         timeout: TimeInterval?,
         operation: @Sendable @escaping () async throws -> T
     ) async throws -> T {
-        guard let timeout, timeout > 0 else {
+        guard let timeoutSpec = try timeoutSpec(from: timeout) else {
             return try await operation()
         }
 
@@ -1244,9 +1245,8 @@ extension LiveAgentCenter {
             }
 
             group.addTask {
-                let nanoseconds = UInt64(timeout * 1_000_000_000)
-                try await Task.sleep(nanoseconds: nanoseconds)
-                throw AgentError.executionTimedOut(timeout)
+                try await Task.sleep(nanoseconds: timeoutSpec.nanoseconds)
+                throw AgentError.executionTimedOut(timeoutSpec.seconds)
             }
 
             defer { group.cancelAll() }
@@ -1256,6 +1256,27 @@ extension LiveAgentCenter {
             }
             return firstResult
         }
+    }
+
+    private func timeoutSpec(from timeout: TimeInterval?) throws -> TimeoutSpec? {
+        guard let timeout else {
+            return nil
+        }
+
+        guard timeout.isFinite else {
+            throw AgentError.invalidConfiguration("ExecutionPolicy.timeout must be a finite number")
+        }
+
+        guard timeout > 0 else {
+            return nil
+        }
+
+        let maxTimeoutSeconds = Double(UInt64.max) / 1_000_000_000
+        let boundedTimeout = min(timeout, maxTimeoutSeconds)
+        let nanosecondsDouble = boundedTimeout * 1_000_000_000
+        let nanoseconds = UInt64(nanosecondsDouble.rounded(.up))
+
+        return TimeoutSpec(seconds: boundedTimeout, nanoseconds: nanoseconds)
     }
 
     func register(preHook: RegisteredPreHook) async {

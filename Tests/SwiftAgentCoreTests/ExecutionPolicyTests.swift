@@ -32,6 +32,7 @@ func runAgentRetriesOnFailure() async throws {
 
     #expect(try run.asString() == "retry-success")
     #expect(RetryChatCompletionsURLProtocol.attemptCount == 2)
+    #expect(run.messages.filter { $0.role == .user }.count == 1)
 }
 
 @Test("runAgent timeout throws executionTimedOut")
@@ -64,6 +65,40 @@ func runAgentTimeout() async throws {
             #expect(timeout == 0.05)
         default:
             Issue.record("Expected executionTimedOut, got: \(error)")
+        }
+    }
+}
+
+@Test("runAgent rejects non-finite timeout configuration")
+func runAgentRejectsNonFiniteTimeoutConfiguration() async throws {
+    let center = LiveAgentCenter()
+    await center.register(model: makeOpenAIMockModel(protocolClass: RetryChatCompletionsURLProtocol.self), named: "invalid-timeout-model")
+
+    let agent = Agent(
+        name: "Invalid Timeout Agent",
+        description: "Timeout config validation",
+        modelName: "invalid-timeout-model",
+        instructions: "Be concise"
+    )
+    await center.register(agent: agent)
+
+    let session = try await center.createSession(agentId: agent.id, userId: UUID(), name: nil)
+    let context = AgentSessionContext(agentId: agent.id, userId: session.userId, sessionId: session.id)
+
+    do {
+        _ = try await center.runAgent(
+            session: context,
+            message: "hello",
+            loadHistory: false,
+            executionPolicy: ExecutionPolicy(timeout: .infinity)
+        )
+        Issue.record("Expected AgentError.invalidConfiguration")
+    } catch let error as AgentError {
+        switch error {
+        case .invalidConfiguration:
+            break
+        default:
+            Issue.record("Expected invalidConfiguration, got: \(error)")
         }
     }
 }
@@ -101,6 +136,64 @@ func runAgentAppliesMaxToolCallsOption() async throws {
 
     #expect(try run.asString() == "ok")
     #expect(ResponsesMaxToolCallsURLProtocol.capturedMaxToolCalls == 3)
+}
+
+@Test("execution policy clamps negative maxToolCalls")
+func executionPolicyClampsNegativeMaxToolCalls() {
+    let policy = ExecutionPolicy(maxToolCalls: -3)
+    #expect(policy.maxToolCalls == 0)
+}
+
+@Test("streamAgent timeout throws executionTimedOut and does not persist run")
+func streamAgentTimeout() async throws {
+    let storage = InMemoryAgentStorage()
+
+    try await withDependencies {
+        $0.storage = storage
+    } operation: {
+        let center = LiveAgentCenter()
+        await center.register(model: makeOpenAIMockModel(protocolClass: SlowStreamingChatCompletionsURLProtocol.self), named: "slow-stream-model")
+
+        let agent = Agent(
+            name: "Slow Stream Agent",
+            description: "Streaming timeout",
+            modelName: "slow-stream-model",
+            instructions: "Be concise"
+        )
+        await center.register(agent: agent)
+
+        let session = try await center.createSession(agentId: agent.id, userId: UUID(), name: nil)
+        let context = AgentSessionContext(agentId: agent.id, userId: session.userId, sessionId: session.id)
+
+        let stream = await center.streamAgent(
+            session: context,
+            message: "hello",
+            loadHistory: false,
+            executionPolicy: ExecutionPolicy(timeout: 0.05)
+        )
+
+        do {
+            for try await _ in stream {
+            }
+            Issue.record("Expected AgentError.executionTimedOut")
+        } catch let error as AgentError {
+            switch error {
+            case .executionTimedOut(let timeout):
+                #expect(timeout == 0.05)
+            default:
+                Issue.record("Expected executionTimedOut, got: \(error)")
+            }
+        }
+
+        let savedSession = try await storage.getSession(
+            sessionId: session.id,
+            agentId: agent.id,
+            userId: session.userId
+        )
+
+        #expect(savedSession != nil)
+        #expect(savedSession?.runs.isEmpty == true)
+    }
 }
 
 private func makeOpenAIMockModel(
@@ -309,4 +402,34 @@ private final class ResponsesMaxToolCallsURLProtocol: URLProtocol, @unchecked Se
 
         return data.isEmpty ? nil : data
     }
+}
+
+private final class SlowStreamingChatCompletionsURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Thread.sleep(forTimeInterval: 0.3)
+
+        let sse = """
+            data: {"id":"chatcmpl-stream-timeout","choices":[{"delta":{"role":"assistant","content":"late"},"finish_reason":null}]}
+
+            data: [DONE]
+
+            """
+
+        let data = Data(sse.utf8)
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://mock.local/v1/chat/completions")!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
